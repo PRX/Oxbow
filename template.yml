@@ -597,81 +597,6 @@ Resources:
         - { Key: prx:dev:application, Value: Oxbow }
       VpcId: !Ref VPC
   ##
-  PublicSubnetIPv4AllowFtpControlConnectionOutboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      CidrBlock: 0.0.0.0/0
-      Egress: true
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 21
-        To: 21
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 100
-  PublicSubnetIPv6AllowFtpControlConnectionOutboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      Egress: true
-      Ipv6CidrBlock: ::/0
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 21
-        To: 21
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 101
-  ##
-  PublicSubnetIPv4AllowFtpActiveDataConnectionOutboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      CidrBlock: 0.0.0.0/0
-      Egress: true
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 20
-        To: 20
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 110
-  PublicSubnetIPv6AllowFtpActiveDataConnectionOutboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      Egress: true
-      Ipv6CidrBlock: ::/0
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 20
-        To: 20
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 111
-  ##
-  PublicSubnetIPv4AllowFtpPassiveDataConnectionOutboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      CidrBlock: 0.0.0.0/0
-      Egress: true
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 1024
-        To: 65535
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 102
-  PublicSubnetIPv6AllowFtpPassiveDataConnectionOutboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      Egress: true
-      Ipv6CidrBlock: ::/0
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 1024
-        To: 65535
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 103
-  ##
   PublicSubnetIPv4AllowSshOutboundTrafficNetworkAclEntry:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -721,31 +646,6 @@ Resources:
       Protocol: 6 # TCP
       RuleAction: allow
       RuleNumber: 105
-  ##
-  PublicSubnetIPv4AllowFtpActiveDataConnectionInboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      CidrBlock: 0.0.0.0/0
-      Egress: false
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 32768
-        To: 61000
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 100
-  PublicSubnetIPv6AllowFtpActiveDataConnectionInboundTrafficNetworkAclEntry:
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      Egress: false
-      Ipv6CidrBlock: ::/0
-      NetworkAclId: !Ref PublicSubnetNetworkAcl
-      PortRange:
-        From: 62000
-        To: 62099
-      Protocol: 6 # TCP
-      RuleAction: allow
-      RuleNumber: 101
   ##
   PublicSubnetIPv4AllowEphemeralInboundTrafficNetworkAclEntry:
     Type: AWS::EC2::NetworkAclEntry
