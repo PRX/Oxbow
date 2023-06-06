@@ -8,13 +8,13 @@ cfnlint:
 	cfn-lint --ignore-checks W --template template.yml
 
 prettier:
-	npm run prettier -- --check "**/*.{js,json,yaml,yml}"
+	npm exec prettier -- --check "**/*.{js,json,yaml,yml}"
 
 eslint:
-	npm run eslint -- "**/*.js"
+	npm exec eslint -- "**/*.js"
 
 typescript:
-	npm run tsc
+	npm exec tsc
 
 bootstrap:
 	npm install
