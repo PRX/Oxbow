@@ -37,7 +37,7 @@ ffmpeg_global_opts = task_details["GlobalOptions"]
 ffmpeg_inputs = task_details["Inputs"]
 
 outputs = task_details["Outputs"]
-ffmpeg_outputs = outputs.each_with_index {|o, idx| "#{o['Options']} -f #{o['Format']} output-#{idx}.file" }.join(" ")
+ffmpeg_outputs = outputs.each_with_index.map {|o, idx| "#{o['Options']} -f #{o['Format']} output-#{idx}.file" }.join(" ")
 
 # Count the tasks in CloudWatch Metrics
 cloudwatch.put_metric_data({
