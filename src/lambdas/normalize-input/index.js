@@ -58,15 +58,14 @@ exports.handler = async (event) => {
     if (!Object.prototype.hasOwnProperty.call(task.FFmpeg, "GlobalOptions")) {
       task.FFmpeg.GlobalOptions = "";
     }
-    if (
-      !Object.prototype.hasOwnProperty.call(task.FFmpeg, "InputFileOptions")
-    ) {
-      task.FFmpeg.InputFileOptions = "";
+    if (!Object.prototype.hasOwnProperty.call(task.FFmpeg, "Inputs")) {
+      task.FFmpeg.Inputs = "";
     }
     if (
-      !Object.prototype.hasOwnProperty.call(task.FFmpeg, "OutputFileOptions")
+      !Object.prototype.hasOwnProperty.call(task.FFmpeg, "Outputs") ||
+      !Array.isArray(task.FFmpeg.Outputs)
     ) {
-      task.FFmpeg.OutputFileOptions = "";
+      task.FFmpeg.Outputs = [];
     }
   });
 
