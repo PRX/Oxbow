@@ -60,7 +60,7 @@ cloudwatch.put_metric_data({
 # Execute the command
 ffmpeg_cmd = [
   "./ffmpeg-bin/ffmpeg",
-  global_opts,
+  ffmpeg_global_opts,
   "#{ffmpeg_inputs}",
   "#{ffmpeg_outputs}"
 ].join(" ")
