@@ -1,0 +1,424 @@
+StartAt: Normalize Input
+States:
+  # Start of pre-processing
+  Normalize Input:
+    Comment: Normalizes input data
+    Type: Task
+    InputPath: "$"
+    Resource: "${NormalizeInputLambdaFunctionArn}"
+    Parameters:
+      Input.$: "$"
+      StateMachine:
+        Id.$: "$$.StateMachine.Id"
+    ResultPath: "$"
+    OutputPath: "$"
+    Next: JobReceived Callbacks Map
+    Retry:
+      - ErrorEquals:
+          - MissingTaskTypeError
+        MaxAttempts: 0
+      - ErrorEquals:
+          - States.ALL
+        IntervalSeconds: 1
+        MaxAttempts: 2
+        BackoffRate: 1
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: "$.Error"
+        Next: Normalize Input Catcher
+  Normalize Input Catcher:
+    Comment: Add a parameter so normalize errors can be identified
+    Type: Pass
+    InputPath: "$"
+    Result: NORMALIZE_INPUT_ERROR
+    ResultPath: "$.State"
+    OutputPath: "$"
+    Next: Add Empty TaskResults
+
+  JobReceived Callbacks Map:
+    Type: Map
+    Comment: Iterates over all callback endpoints to indicate the job was received
+    InputPath: "$"
+    ItemsPath: "$.Job.Callbacks"
+    Parameters:
+      Callback.$: "$$.Map.Item.Value"
+      StateMachine:
+        Id.$: "$$.StateMachine.Id"
+      Execution:
+        Id.$: "$$.Execution.Id"
+      Message: # The JSON of this value will be sent to endpoints
+        JobReceived:
+          Job:
+            Id.$: "$.Job.Id"
+          Execution:
+            Id.$: "$$.Execution.Id"
+          State: RECEIVED
+    ResultPath: "$.Void" # The output of the iterator states is discarded
+    OutputPath: "$"
+    Next: Tasks Map
+    MaxConcurrency: 0
+    Iterator:
+      StartAt: Send JobReceived Callback
+      States:
+        Send JobReceived Callback:
+          Type: Task
+          Comment: >-
+            Sends a job received message for a single callback endpoint in
+            the iterator
+          InputPath: "$"
+          Resource: "${CallbackLambdaFunctionArn}"
+          ResultPath: "$"
+          OutputPath: "$"
+          End: true
+          Retry:
+            - ErrorEquals:
+                - States.ALL
+              IntervalSeconds: 5
+              MaxAttempts: 3
+              BackoffRate: 2
+
+# Start of task execution
+  Tasks Map:
+    # The key output of this map state is the TaskResults array. There will
+    # be one element for each task, whether it succeeded or failed. Successful
+    # task elements will have a `Task` property, and failed tasks will have a
+    # `Type` property.
+    Type: Map
+    Comment: Iterates over all tasks included in the job
+    InputPath: "$"
+    ItemsPath: "$.Job.Tasks"
+    Parameters:
+      # Parameters' value is what is passed to each state within the iterator,
+      # but each state decides independetly what is passed to its backing
+      # resource (Lambda, etc). For example, Callbacks is available to each
+      # state, but usually not passed into Lambdas, since most tasks don't
+      # utilize that data.
+      Job:
+        Id.$: "$.Job.Id"
+      Execution:
+        Id.$: "$$.Execution.Id"
+      Artifact.$: "$.Artifact"
+      TaskIndex.$: "$$.Map.Item.Index"
+      Task.$: "$$.Map.Item.Value" # This value is a task defined in the job input, e.g., { "Type": "Copy" }
+      Callbacks.$: "$.Job.Callbacks"
+    ResultPath: "$.TaskResults"
+    OutputPath: "$"
+    Next: JobResult Callback Map
+    MaxConcurrency: 0
+    Iterator:
+      StartAt: Route Task By Type
+      States:
+        Route Task By Type:
+          Type: Choice
+          Comment: >-
+            For the current task being iterated, routes to the appropriate
+            state
+          Default: Unknown Task Type
+          Choices:
+            - Variable: "$.Task.Type"
+              StringEquals: FFmpeg
+              Next: FFmpeg Task Fargate Execution
+
+        # This is a no-op. No callbacks are sent, and any record of this task
+        # will be filtered out of the job result callbacks
+        Unknown Task Type:
+          Type: Pass
+          Comment: Handles and blackholes tasks with an unknown type
+          End: true
+          ResultPath: "$"
+          Result:
+            Task: "Null"
+
+        # Task operations
+        # - The InputPath and OutputPath of all of these must be $, so that
+        #   all data is available to states down the line.
+        # - The ResultPath for states that are returning the final output of a
+        #   task's operation (i.e., states immediately prior to the callbacks
+        #   map) must be $.TaskResult, and their return value must be the
+        #   expected standard task output (e.g., { Task: 'Copy' })
+        # - All task operation states, not just the final state, should catch
+        #   to the TaskResult Error Callback Map.
+        FFmpeg Task Fargate Execution:
+          Type: Task
+          Comment: Runs FFmpeg
+          Resource: arn:aws:states:::ecs:runTask.sync
+          InputPath: "$"
+          Parameters:
+            Cluster: "${EcsClusterArn}"
+            LaunchType: FARGATE
+            Overrides:
+              ContainerOverrides:
+                - Environment:
+                    - Name: STATE_MACHINE_ARN
+                      Value.$: "$$.StateMachine.Id"
+                    - Name: STATE_MACHINE_NAME
+                      Value.$: "$$.StateMachine.Name"
+                    - Name: STATE_MACHINE_EXECUTION_ID
+                      Value.$: "$$.Execution.Id"
+                    - Name: STATE_MACHINE_JOB_ID
+                      Value.$: "$.Job.Id"
+                    - Name: STATE_MACHINE_TASK_INDEX
+                      Value.$: States.Format('{}', $.TaskIndex)
+                    - Name: STATE_MACHINE_S3_DESTINATION_WRITER_ROLE
+                      Value: "${S3DestinationWriterRoleArn}"
+                    - Name: STATE_MACHINE_AWS_REGION
+                      Value: "${AwsRegion}"
+                    - Name: STATE_MACHINE_FFMPEG_TASK_JSON
+                      Value.$: States.JsonToString($.Task.FFmpeg)
+                  Name: "${FFmpegContainerName}"
+            NetworkConfiguration:
+              AwsvpcConfiguration:
+                AssignPublicIp: ENABLED
+                Subnets:
+                  - "${VpcPublicSubnet1}"
+                  - "${VpcPublicSubnet2}"
+            PropagateTags: TASK_DEFINITION
+            TaskDefinition: "${FFmpegEcsTaskDefinitionArn}"
+          ResultPath: "$.Void"
+          OutputPath: "$"
+          Next: FFmpeg Task Results Formatter
+          Retry:
+            - ErrorEquals:
+                - States.ALL
+              IntervalSeconds: 15
+              MaxAttempts: 5
+              BackoffRate: 2
+          Catch:
+            - ErrorEquals:
+                - States.ALL
+              ResultPath: "$.Error"
+              Next: TaskResult Error Callback Map
+        FFmpeg Task Results Formatter:
+          Type: Task
+          Comment: Formats the output of a FFmpeg task
+          Resource: "${FFmpegTaskOutputLambdaFunctionArn}"
+          InputPath: "$"
+          Parameters:
+            Job:
+              Id.$: "$.Job.Id"
+            Execution:
+              Id.$: "$$.Execution.Id"
+            Task.$: "$.Task"
+            TaskIteratorIndex.$: "$.TaskIndex"
+          ResultPath: "$.TaskResult"
+          OutputPath: "$"
+          Next: TaskResult Callbacks Map
+          Retry:
+            - ErrorEquals:
+                - States.ALL
+              IntervalSeconds: 5
+              MaxAttempts: 3
+              BackoffRate: 2
+          Catch:
+            - ErrorEquals:
+                - States.ALL
+              ResultPath: "$.Error"
+              Next: TaskResult Error Callback Map
+
+        # Task callbacks
+        # All tasks operations end up at one of these callback states,
+        # depending on whether the task was successful or not. The value for
+        # a given task in the TaskResults array coming out of the Tasks Map
+        # will be the output whichever of these callback states is used.
+        #
+        # For failed tasks, the task callback will include information about
+        # the error. This information is not included in the job result
+        # callback.
+        #
+        # The output for a successful task is the result of the task.
+        # The output for a failed task is the original input task definition.
+        TaskResult Callbacks Map:
+          Type: Map
+          Comment: >-
+            Iterates over all callback endpoints to send messages when tasks
+            are successful
+          InputPath: "$"
+          ItemsPath: "$.Callbacks"
+          Parameters:
+            Callback.$: "$$.Map.Item.Value"
+            StateMachine:
+              Id.$: "$$.StateMachine.Id"
+            Execution:
+              Id.$: "$$.Execution.Id"
+            TaskIteratorIndex.$: "$.TaskIndex"
+            Message: # The JSON of this value will be sent to endpoints
+              Task.$: "$.Task"
+              TaskResult:
+                Job:
+                  Id.$: "$.Job.Id"
+                Execution:
+                  Id.$: "$$.Execution.Id"
+                Result.$: "$.TaskResult"
+          ResultPath: "$.Void" # The output of the iterator states is discarded
+          OutputPath: "$.TaskResult"
+          End: true
+          MaxConcurrency: 0
+          Iterator:
+            StartAt: Send TaskResult Callback
+            States:
+              Send TaskResult Callback:
+                Type: Task
+                Comment: >-
+                  Sends a callback message to a single endpoint when tasks
+                  are successful
+                InputPath: "$"
+                Resource: "${CallbackLambdaFunctionArn}"
+                ResultPath: "$"
+                OutputPath: "$"
+                End: true
+                Retry:
+                  - ErrorEquals:
+                      - States.ALL
+                    IntervalSeconds: 5
+                    MaxAttempts: 3
+                    BackoffRate: 2
+        TaskResult Error Callback Map:
+          Type: Map
+          Comment: >-
+            Iterates over all callback endpoints to send messages when tasks
+            fail
+          InputPath: "$"
+          ItemsPath: "$.Callbacks"
+          Parameters:
+            Callback.$: "$$.Map.Item.Value"
+            StateMachine:
+              Id.$: "$$.StateMachine.Id"
+            Execution:
+              Id.$: "$$.Execution.Id"
+            TaskIteratorIndex.$: "$.TaskIndex"
+            Message: # The JSON of this value will be sent to endpoints
+              Task.$: "$.Task"
+              TaskResult:
+                Job:
+                  Id.$: "$.Job.Id"
+                Execution:
+                  Id.$: "$$.Execution.Id"
+                Error.$: "$.Error"
+          ResultPath: "$.Void" # The output of the iterator states is discarded
+          OutputPath: "$.Task"
+          End: true
+          MaxConcurrency: 0
+          Iterator:
+            StartAt: Send TaskResult Error Callback
+            States:
+              Send TaskResult Error Callback:
+                Type: Task
+                Comment: >-
+                  Sends a callback message to a single endpoint when tasks
+                  fail
+                InputPath: "$"
+                Resource: "${CallbackLambdaFunctionArn}"
+                ResultPath: "$"
+                OutputPath: "$"
+                End: true
+                Retry:
+                  - ErrorEquals:
+                      - States.ALL
+                    IntervalSeconds: 5
+                    MaxAttempts: 3
+                    BackoffRate: 2
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: "$.Error"
+        Next: Tasks Map Catcher
+  Tasks Map Catcher:
+    Comment: >-
+      Add a parameter so task map errors can be identified. Is NOT responsible
+      for catching individual task execution errors (like if a Copy task fails)
+    Type: Pass
+    InputPath: "$"
+    Result: ITERATOR_ERROR
+    ResultPath: "$.State"
+    OutputPath: "$"
+    Next: Add Empty TaskResults
+  # End of task execution
+
+  # States below this will expect $.TaskResults to exist
+  Add Empty TaskResults:
+    Comment: >-
+      Add a TaskResults key with an empty array value, for cases where the task
+      iterator does not succeed and it's not otherwise added
+    Type: Pass
+    InputPath: "$"
+    Result: []
+    ResultPath: "$.TaskResults"
+    OutputPath: "$"
+    Next: JobResult Callback Map
+
+  # Start of post-processing
+  JobResult Callback Map:
+    Type: Map
+    Comment: Iterates over all callback endpoints to send job results
+    InputPath: "$"
+    ItemsPath: "$.Job.Callbacks"
+    Parameters:
+      Callback.$: "$$.Map.Item.Value"
+      StateMachine:
+        Id.$: "$$.StateMachine.Id"
+      Execution:
+        Id.$: "$$.Execution.Id"
+      Message: # The JSON of this value will be sent to endpoints
+        JobResult:
+          Job:
+            Id.$: "$.Job.Id"
+          Execution:
+            Id.$: "$$.Execution.Id"
+          State.$: "$.State"
+          # Task/Type = Null elements are filtered out.
+          # Successful tasks will have a Task property
+          TaskResults.$: "$.TaskResults.[?(@.Task && @.Task != 'Null')]"
+          # Failed tasks will have a Type property
+          FailedTasks.$: "$.TaskResults.[?(@.Type && @.Type != 'Null')]"
+    ResultPath: "$.Void" # The output of the iterator states is discarded
+    OutputPath: "$"
+    Next: Normalize Output
+    MaxConcurrency: 0
+    Iterator:
+      StartAt: Send JobResult Callback
+      States:
+        Send JobResult Callback:
+          Type: Task
+          Comment: >-
+            Sends a callback message to a single endpoint in the iterator with
+            a job result
+          InputPath: "$"
+          Resource: "${CallbackLambdaFunctionArn}"
+          ResultPath: "$"
+          OutputPath: "$"
+          End: true
+          Retry:
+            - ErrorEquals:
+                - States.ALL
+              IntervalSeconds: 5
+              MaxAttempts: 3
+              BackoffRate: 2
+
+  Normalize Output:
+    Comment: Normalizes output data
+    Type: Task
+    InputPath: "$"
+    Retry:
+      - ErrorEquals:
+          - States.ALL
+        IntervalSeconds: 1
+        MaxAttempts: 2
+        BackoffRate: 1
+    Parameters:
+      StateMachine:
+        Id.$: "$$.StateMachine.Id"
+      Message:
+        JobResult:
+          Job:
+            Id.$: "$.Job.Id"
+          Execution:
+            Id.$: "$$.Execution.Id"
+          State.$: "$.State"
+          TaskResults.$: "$.TaskResults.[?(@.Task && @.Task != 'Null')]"
+          FailedTasks.$: "$.TaskResults.[?(@.Type && @.Type != 'Null')]"
+    Resource: "${NormalizeOutputLambdaFunctionArn}"
+    ResultPath: "$"
+    OutputPath: "$"
+    End: true
+  # End of post-processing

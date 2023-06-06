@@ -1,0 +1,1471 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >-
+  Creates a Step Function state machine for processing media streams, as
+  well as some supporting resources
+
+Conditions:
+  CreateProductionResources: !Equals [!Ref EnvironmentType, Production]
+  CreateSqsEventMapping: !Equals [!Ref EnableSqsJobExecution, "True"]
+  CreateDefaultEventBusRule: !Equals [!Ref EnableDefaultEventBusRule, "True"]
+  CreateOrganizationAccessPolicies: !Not [!Equals [!Ref OrganizationId, ""]]
+
+Parameters:
+  # Generally set by the deploy pipeline
+  FFmpegEcsTaskDefinitionImage:
+    Type: String
+  # Optional
+  EnableSqsJobExecution:
+    Type: String
+    AllowedValues:
+      - "True"
+      - "False"
+    Default: "False"
+  EnableDefaultEventBusRule:
+    Type: String
+    AllowedValues:
+      - "True"
+      - "False"
+    Default: "True"
+  SubnetIPv4CidrBits:
+    Default: 14
+    Description: >-
+      The number of subnet bits for each subnet's IPv4 CIDR.
+      For example, a value of 8 will create CIDRs with a mask of "/24".
+      To calculate the required host bits for a given subnet bits, subtract the
+      subnet bits from 32 for IPv4.
+      Updating requires replacement of all subnets. When subnets are being
+      replaced the ranges of the new subnets cannot overlap those being
+      replaced.
+    MaxValue: 256
+    MinValue: 1
+    Type: Number
+  SubnetIPv6CidrBits:
+    Default: 64
+    Description: >-
+      The number of subnet bits for each subnet's IPv6 CIDR.
+      For example, a value of 64 will create CIDRs with a mask of "/64".
+      To calculate the required host bits for a given subnet bits, subtract the
+      subnet bits from 128 for IPv6.
+      Updating requires replacement of all subnets. When subnets are being
+      replaced the ranges of the new subnets cannot overlap those being
+      replaced.
+    MaxValue: 256
+    MinValue: 1
+    Type: Number
+  OrganizationId:
+    Type: String
+    Default: ""
+  # Required
+  EnvironmentType:
+    Type: String
+    AllowedValues:
+      - Testing
+      - Staging
+      - Production
+  EnvironmentTypeAbbreviation:
+    Type: String
+    AllowedValues:
+      - test
+      - stag
+      - prod
+
+Resources:
+  # Managed IAM Policies
+  ArtifactBucketReadOnlyAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Provides read-only access to the artifact bucket for a particular
+        Oxbow deployment
+      PolicyDocument:
+        Statement:
+          - Action: s3:GetObject*
+            Effect: Allow
+            Resource: !Sub arn:aws:s3:::${ArtifactBucket}/*
+        Version: "2012-10-17"
+  ArtifactBucketWriteAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Provides limitedS S3 list and write access to the artifact bucket for a
+        particular Oxbow deployment
+      PolicyDocument:
+        Statement:
+          - Action: s3:ListBucketMultipartUploads
+            Effect: Allow
+            Resource: !Sub arn:aws:s3:::${ArtifactBucket}
+          - Action:
+              - s3:PutObject
+              - s3:AbortMultipartUpload
+              - s3:ListMultipartUploadParts
+            Effect: Allow
+            Resource: !Sub arn:aws:s3:::${ArtifactBucket}/*
+        Version: "2012-10-17"
+  # General-Purpose IAM Roles
+  S3DestinationWriterRole: # This resource name should not change. Changes will break existing bucket policies.
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS:
+                - !GetAtt CallbackLambdaIamRole.Arn
+                - !GetAtt FFmpegEcsTaskIamRole.Arn
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        # Calls to s3.copyObject need read access to the artifact bucket
+        - !Ref ArtifactBucketReadOnlyAccessPolicy
+      Policies:
+        # For cross-account S3 buckets, the IAM role needs the same
+        # permissions that the bucket policy grants to this role
+        - PolicyName: S3DestinationWritePolicy
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject*
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  GCPStorageDestinationWriterRole: # This resource name should not change. Changes will break existing federation configurations.
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS:
+                - !GetAtt CallbackLambdaIamRole.Arn
+                - !GetAtt FFmpegEcsTaskIamRole.Arn
+        Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # SNS
+  ## Messages sent to this topic will be handled by a Lambda function which
+  ## executes the Step Functions state machine. The `input` to the state machine
+  ## execution will be the body of the SNS message. The SNS message must be
+  ## valic JSON.
+  JobExecutionSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  JobExecutionSnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: CreateOrganizationAccessPolicies
+    Properties:
+      PolicyDocument:
+        Id: OrganizationAcccessPolicy
+        Statement:
+          - Action: sns:Publish
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationId
+            Effect: Allow
+            Sid: OrganizationPublish
+            Principal:
+              AWS: "*"
+            Resource: !Ref JobExecutionSnsTopic
+        Version: "2012-10-17"
+      Topics:
+        - !Ref JobExecutionSnsTopic
+  JobExecutionSnsTopicLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures: [arm64]
+      CodeUri: src/lambdas/job-execution-sns/
+      Description: >-
+        Relays SNS messages sent to a subscribed topic to a State Machine
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref StateMachine
+      Events:
+        JobExecution:
+          Properties:
+            Topic: !Ref JobExecutionSnsTopic
+          Type: SNS
+      Handler: index.handler
+      MemorySize: 128
+      Policies:
+        - Statement:
+            - Action: states:StartExecution
+              Effect: Allow
+              Resource: !Ref StateMachine
+              Sid: AllowJobExecution
+          Version: "2012-10-17"
+      Runtime: nodejs14.x
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+      Timeout: 8
+  JobExecutionSnsTopicLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${JobExecutionSnsTopicLambdaFunction}
+      RetentionInDays: 30
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  JobExecutionSnsTopicLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateProductionResources
+    Properties:
+      AlarmName: !Sub MAJOR [Oxbow] Job execution SNS Lambda <${EnvironmentTypeAbbreviation}> INVOCATION FAILED (${AWS::StackName})
+      AlarmDescription: !Sub >-
+        The AWS Lambda function resource subscribed to the ${EnvironmentType}
+        job execution SNS topic failed. This likely means that a job that was
+        sent to Oxbow did not reach the state machine.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref JobExecutionSnsTopicLambdaFunction
+  # SQS
+  ## Messages sent to this queue will be handled by a Lambda function which
+  ## executes the Step Functions state machine. The `input` to the state machine
+  ## execution will be the body of the SQS message. The SQS message must be
+  ## valic JSON.
+  JobExecutionSqsQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  JobExecutionSqsQueueLambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SqsPolicy
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - sqs:ChangeMessageVisibility
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ReceiveMessage
+                Effect: Allow
+                Resource: !GetAtt JobExecutionSqsQueue.Arn
+            Version: "2012-10-17"
+        - PolicyName: StepFunctionsPolicy
+          PolicyDocument:
+            Statement:
+              - Action: states:StartExecution
+                Effect: Allow
+                Resource: !Ref StateMachine
+            Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  JobExecutionSqsQueueLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures: [arm64]
+      CodeUri: src/lambdas/job-execution-sqs/
+      Description: >-
+        Relays SQS messages sent to a subscribed queue to a State Machine
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref StateMachine
+      Events:
+        SqsTrigger:
+          Type: SQS
+          Properties:
+            Enabled: !If [CreateSqsEventMapping, true, false]
+            Queue: !GetAtt JobExecutionSqsQueue.Arn
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt JobExecutionSqsQueueLambdaIamRole.Arn
+      Runtime: nodejs14.x
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+      Timeout: 8
+  JobExecutionSqsQueueLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${JobExecutionSqsQueueLambdaFunction}
+      RetentionInDays: 30
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  JobExecutionSqsQueueLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateProductionResources
+    Properties:
+      AlarmName: !Sub MAJOR [Oxbow] Job execution SQS Lambda <${EnvironmentTypeAbbreviation}> INVOCATION FAILED (${AWS::StackName})
+      AlarmDescription: !Sub >-
+        The AWS Lambda function resource subscribed to the ${EnvironmentType}
+        job execution SQS queue failed. This likely means that a job that was
+        sent to Oxbow did not reach the state machine.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref JobExecutionSqsQueueLambdaFunction
+  # EventBridge
+  CustomEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Ref AWS::StackName
+  JobExecutionEventRuleIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        - PolicyName: StepFunctionsPolicy
+          PolicyDocument:
+            Statement:
+              - Action: states:StartExecution
+                Effect: Allow
+                Resource: !Ref StateMachine
+            Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  CustomEventBusJobExecutionEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref CustomEventBus
+      EventPattern:
+        detail-type:
+          - Oxbow Job Execution Submission
+      State: ENABLED
+      Targets:
+        - Arn: !Ref StateMachine
+          Id: !Sub ${AWS::StackName}-JobExecutionEventRule
+          InputPath: $.detail
+          RoleArn: !GetAtt JobExecutionEventRuleIamRole.Arn
+  DefaultEventBusJobExecutionEventRule:
+    Type: AWS::Events::Rule
+    Condition: CreateDefaultEventBusRule
+    Properties:
+      EventPattern:
+        detail-type:
+          - Oxbow Job Execution Submission
+      State: ENABLED
+      Targets:
+        - Arn: !Ref StateMachine
+          Id: !Sub ${AWS::StackName}-JobExecutionEventRule
+          InputPath: $.detail
+          RoleArn: !GetAtt JobExecutionEventRuleIamRole.Arn
+  ##############################################################################
+  ##############################################################################
+  ##############################################################################
+  # ██╗   ██╗██████╗  ██████╗
+  # ██║   ██║██╔══██╗██╔════╝
+  # ██║   ██║██████╔╝██║
+  # ╚██╗ ██╔╝██╔═══╝ ██║
+  #  ╚████╔╝ ██║     ╚██████╗
+  #   ╚═══╝  ╚═╝      ╚═════╝
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 172.16.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # IPv6
+  IPv6VpcCidrBlock:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      AmazonProvidedIpv6CidrBlock: true
+      VpcId: !Ref VPC
+  # DHCP
+  DhcpOptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: ec2.internal
+      DomainNameServers:
+        - AmazonProvidedDNS
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  DhcpOptionsAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      DhcpOptionsId: !Ref DhcpOptions
+      VpcId: !Ref VPC
+  # Internet gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}_public" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  # Routing for public subnets
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}_public" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+      VpcId: !Ref VPC
+  IPv4Route:
+    DependsOn: VpcGatewayAttachment
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+  IPv6Route:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationIpv6CidrBlock: ::/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+  # Public subnets
+  PublicSubnet1:
+    # DeletionPolicy: Retain
+    DependsOn: IPv6VpcCidrBlock
+    Type: AWS::EC2::Subnet
+    # UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock:
+        !Select [0, !Cidr [!GetAtt VPC.CidrBlock, 1, !Ref SubnetIPv4CidrBits]]
+      Ipv6CidrBlock:
+        !Select [
+          0,
+          !Cidr [
+            !Select [0, !GetAtt VPC.Ipv6CidrBlocks],
+            1,
+            !Ref SubnetIPv6CidrBits,
+          ],
+        ]
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+        - Key: Name
+          Value:
+            Fn::Sub:
+              - ${AWS::StackName}_public-1_${ZoneName}
+              - ZoneName: !Select [0, !GetAZs ""]
+      VpcId: !Ref VPC
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnet2:
+    # DeletionPolicy: Retain
+    DependsOn: IPv6VpcCidrBlock
+    Type: AWS::EC2::Subnet
+    # UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock:
+        !Select [1, !Cidr [!GetAtt VPC.CidrBlock, 2, !Ref SubnetIPv4CidrBits]]
+      Ipv6CidrBlock:
+        !Select [
+          1,
+          !Cidr [
+            !Select [0, !GetAtt VPC.Ipv6CidrBlocks],
+            2,
+            !Ref SubnetIPv6CidrBits,
+          ],
+        ]
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+        - Key: Name
+          Value:
+            Fn::Sub:
+              - ${AWS::StackName}_public-2_${ZoneName}
+              - ZoneName: !Select [1, !GetAZs ""]
+      VpcId: !Ref VPC
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+  # ACL for public subnets
+  PublicSubnetNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}_public" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+      VpcId: !Ref VPC
+  ##
+  PublicSubnetIPv4AllowFtpControlConnectionOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 21
+        To: 21
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 100
+  PublicSubnetIPv6AllowFtpControlConnectionOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 21
+        To: 21
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 101
+  ##
+  PublicSubnetIPv4AllowFtpActiveDataConnectionOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 20
+        To: 20
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 110
+  PublicSubnetIPv6AllowFtpActiveDataConnectionOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 20
+        To: 20
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 111
+  ##
+  PublicSubnetIPv4AllowFtpPassiveDataConnectionOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 102
+  PublicSubnetIPv6AllowFtpPassiveDataConnectionOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 103
+  ##
+  PublicSubnetIPv4AllowSshOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 114
+  PublicSubnetIPv6AllowSshOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 115
+  ##
+  PublicSubnetIPv4AllowHttpsOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 104
+  PublicSubnetIPv6AllowHttpsOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 105
+  ##
+  PublicSubnetIPv4AllowFtpActiveDataConnectionInboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 32768
+        To: 61000
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 100
+  PublicSubnetIPv6AllowFtpActiveDataConnectionInboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: false
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 62000
+        To: 62099
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 101
+  ##
+  PublicSubnetIPv4AllowEphemeralInboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 32768
+        To: 61000
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 102
+  PublicSubnetIPv6AllowEphemeralInboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: false
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 62000
+        To: 62099
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 103
+  ##
+  PublicSubnet1NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnet2NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      SubnetId: !Ref PublicSubnet2
+  # Routing for private subnets
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}_private" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # Private subnets
+  PrivateSubnet1:
+    # DeletionPolicy: Retain
+    DependsOn: IPv6VpcCidrBlock
+    Type: AWS::EC2::Subnet
+    # UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock:
+        !Select [2, !Cidr [!GetAtt VPC.CidrBlock, 3, !Ref SubnetIPv4CidrBits]]
+      Ipv6CidrBlock:
+        !Select [
+          2,
+          !Cidr [
+            !Select [0, !GetAtt VPC.Ipv6CidrBlocks],
+            3,
+            !Ref SubnetIPv6CidrBits,
+          ],
+        ]
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+        - Key: Name
+          Value:
+            Fn::Sub:
+              - ${AWS::StackName}_private-1_${ZoneName}
+              - ZoneName: !Select [0, !GetAZs ""]
+      VpcId: !Ref VPC
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+  PrivateSubnet2:
+    # DeletionPolicy: Retain
+    DependsOn: IPv6VpcCidrBlock
+    Type: AWS::EC2::Subnet
+    # UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock:
+        !Select [3, !Cidr [!GetAtt VPC.CidrBlock, 4, !Ref SubnetIPv4CidrBits]]
+      Ipv6CidrBlock:
+        !Select [
+          3,
+          !Cidr [
+            !Select [0, !GetAtt VPC.Ipv6CidrBlocks],
+            4,
+            !Ref SubnetIPv6CidrBits,
+          ],
+        ]
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+        - Key: Name
+          Value:
+            Fn::Sub:
+              - ${AWS::StackName}_private-2_${ZoneName}
+              - ZoneName: !Select [1, !GetAZs ""]
+      VpcId: !Ref VPC
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+  # ACL for private subnets
+  # Private subnets allow all inbound and outbound traffic
+  PrivateSubnetNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}_private" }
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+      VpcId: !Ref VPC
+  ##
+  PrivateSubnetIPv4AllowAllInboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PrivateSubnetNetworkAcl
+      Protocol: -1 # All
+      RuleAction: allow
+      RuleNumber: 100
+  PrivateSubnetIPv6AllowAllInboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: false
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PrivateSubnetNetworkAcl
+      Protocol: -1 # All
+      RuleAction: allow
+      RuleNumber: 101
+  ##
+  PrivateSubnetIPv4AllowAllOutboudTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PrivateSubnetNetworkAcl
+      Protocol: -1 # All
+      RuleAction: allow
+      RuleNumber: 100
+  PrivateSubnetIPv6AllowAllOutboudTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PrivateSubnetNetworkAcl
+      Protocol: -1 # All
+      RuleAction: allow
+      RuleNumber: 101
+  ##
+  PrivateSubnet1NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PrivateSubnetNetworkAcl
+      SubnetId: !Ref PrivateSubnet1
+  PrivateSubnet2NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PrivateSubnetNetworkAcl
+      SubnetId: !Ref PrivateSubnet2
+  ##############################################################################
+  ##############################################################################
+  ##############################################################################
+  # ECS Cluster
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # FFmpeg ECS Service
+  FFmpegEcsTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RetentionInDays: 14
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  FFmpegEcsTaskExecutionIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        # https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_execution_IAM_role.html#task-execution-ecr-conditionkeys
+        # An alternative to the managed AmazonECSTaskExecutionRolePolicy, which
+        # restrics access to a specific VPC and VPC endpoint
+        - PolicyName: TaskExecutionPolicy
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - ecr:GetAuthorizationToken
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: "*"
+              - Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  FFmpegEcsTaskIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        # Allow it to put CloudWatch Metrics
+        - PolicyName: PutCloudWatchMetric
+          PolicyDocument:
+            Statement:
+              - Action: cloudwatch:PutMetricData
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+      ManagedPolicyArns:
+        # FFmpeg operations are always pulling FROM the artifact bucket
+        - !Ref ArtifactBucketReadOnlyAccessPolicy
+        # Also writing metadata to the artifact bucket for the output Lambda
+        # to read from
+        - !Ref ArtifactBucketWriteAccessPolicy
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  FFmpegEcsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Essential: true
+          Image: !Ref FFmpegEcsTaskDefinitionImage
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FFmpegEcsTaskLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Name: !Sub ${AWS::StackName}-ffmpeg-container
+      Cpu: "4096"
+      ExecutionRoleArn: !GetAtt FFmpegEcsTaskExecutionIamRole.Arn
+      Memory: "8192"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+      TaskRoleArn: !GetAtt FFmpegEcsTaskIamRole.Arn
+  # Artifact Bucket
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 1
+            Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # Normalize Input Lambda
+  NormalizeInputLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures: [arm64]
+      CodeUri: src/lambdas/normalize-input/
+      Description: >-
+        Normalizes Oxbow job input
+      Handler: index.handler
+      MemorySize: 128
+      Policies:
+        - Statement:
+            - Action: cloudwatch:PutMetricData
+              Effect: Allow
+              Resource: "*"
+          Version: "2012-10-17"
+      Runtime: nodejs14.x
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+      Timeout: 4
+  NormalizeInputLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${NormalizeInputLambdaFunction}
+      RetentionInDays: 30
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # FFmpeg Output Lambda
+  FFmpegTaskOutputLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures: [arm64]
+      CodeUri: src/lambdas/ffmpeg-task-output/
+      Description: >-
+        Formats the output of a FFmpeg task result
+      Environment:
+        Variables:
+          ARTIFACT_BUCKET_NAME: !Ref ArtifactBucket
+      Handler: index.handler
+      MemorySize: 128
+      Policies:
+        - !Ref ArtifactBucketReadOnlyAccessPolicy
+      Runtime: nodejs14.x
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+      Timeout: 4
+  FFmpegTaskOutputLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${FFmpegTaskOutputLambdaFunction}
+      RetentionInDays: 30
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  FFmpegTaskOutputLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateProductionResources
+    Properties:
+      AlarmName: !Sub MINOR [Oxbow] FFmpeg output Lambda <${EnvironmentTypeAbbreviation}> INVOCATION FAILED (${AWS::StackName})
+      AlarmDescription: >-
+        FFmpeg output format function has encountered an invocation error
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: LambdaFunctionsFailed
+      Namespace: AWS/States
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LambdaFunctionArn
+          Value: !GetAtt FFmpegTaskOutputLambdaFunction.Arn
+  # Callback Lambda
+  CallbackLambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        # Must be able to publish to whatever SNS topics are defined by a job
+        - PolicyName: SnsPublish
+          PolicyDocument:
+            Statement:
+              - Action: sns:Publish
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+        # Must be able to publish to whatever SQS queues are defined by a job
+        - PolicyName: SqsSendMessage
+          PolicyDocument:
+            Statement:
+              - Action: sqs:SendMessage
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+        # Allow it to put CloudWatch Metrics
+        - PolicyName: PutCloudWatchMetric
+          PolicyDocument:
+            Statement:
+              - Action: cloudwatch:PutMetricData
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  CallbackLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures: [arm64]
+      CodeUri: src/lambdas/callbacks/
+      Description: >-
+        Sends a job or task callback message to a single endpoint
+      Environment:
+        Variables:
+          MAX_HTTP_REDIRECTS: "3"
+          S3_DESTINATION_WRITER_ROLE: !GetAtt S3DestinationWriterRole.Arn
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt CallbackLambdaIamRole.Arn
+      Runtime: nodejs14.x
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+      Timeout: 4
+  CallbackLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${CallbackLambdaFunction}
+      RetentionInDays: 30
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # Normalize Output Lambda
+  NormalizeOutputLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Architectures: [arm64]
+      CodeUri: src/lambdas/normalize-output/
+      Description: >-
+        Normalizes Oxbow job output
+      Handler: index.handler
+      MemorySize: 128
+      Policies:
+        - Statement:
+            - Action: cloudwatch:PutMetricData
+              Effect: Allow
+              Resource: "*"
+          Version: "2012-10-17"
+      Runtime: nodejs14.x
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+      Timeout: 4
+  NormalizeOutputLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${NormalizeOutputLambdaFunction}
+      RetentionInDays: 30
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  # Step Functions
+  StateMachineIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: !Sub states.${AWS::Region}.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        - PolicyName: LambdaTaskPolicy
+          PolicyDocument:
+            Statement:
+              - Action: lambda:InvokeFunction
+                Effect: Allow
+                Resource:
+                  - !GetAtt NormalizeInputLambdaFunction.Arn
+                  - !GetAtt CallbackLambdaFunction.Arn
+                  - !GetAtt FFmpegTaskOutputLambdaFunction.Arn
+                  - !GetAtt NormalizeOutputLambdaFunction.Arn
+            Version: "2012-10-17"
+        - PolicyName: PassRoleToEcsPolicy
+          PolicyDocument:
+            Statement:
+              - Action: iam:PassRole
+                Effect: Allow
+                Resource:
+                  - !GetAtt FFmpegEcsTaskExecutionIamRole.Arn
+                  - !GetAtt FFmpegEcsTaskIamRole.Arn
+            Version: "2012-10-17"
+        # https://docs.aws.amazon.com/step-functions/latest/dg/ecs-iam.html
+        - PolicyName: EcsSyncStaticResourcesPolicy
+          PolicyDocument:
+            Statement:
+              - Action: ecs:RunTask
+                Effect: Allow
+                Resource:
+                  - !Ref FFmpegEcsTaskDefinition
+              - Action:
+                  - ecs:StopTask
+                  - ecs:DescribeTasks
+                Effect: Allow
+                Resource: "*"
+              - Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Effect: Allow
+                Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForECSTaskRule
+            Version: "2012-10-17"
+        # https://docs.aws.amazon.com/step-functions/latest/dg/ecs-iam.html
+        - PolicyName: EcsSyncDynamicResourcesPolicy
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - ecs:RunTask
+                  - ecs:StopTask
+                  - ecs:DescribeTasks
+                Effect: Allow
+                Resource: "*"
+              - Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Effect: Allow
+                Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForECSTaskRule
+            Version: "2012-10-17"
+      Tags:
+        - { Key: prx:meta:tagging-version, Value: "2021-04-07" }
+        - { Key: prx:cloudformation:stack-name, Value: !Ref AWS::StackName }
+        - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
+        - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
+        - { Key: prx:dev:application, Value: Oxbow }
+  StateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionSubstitutions:
+        AwsPartition: !Ref AWS::Partition
+        AwsRegion: !Ref AWS::Region
+        CallbackLambdaFunctionArn: !GetAtt CallbackLambdaFunction.Arn
+        EcsClusterArn: !GetAtt EcsCluster.Arn
+        NormalizeInputLambdaFunctionArn: !GetAtt NormalizeInputLambdaFunction.Arn
+        NormalizeOutputLambdaFunctionArn: !GetAtt NormalizeOutputLambdaFunction.Arn
+        S3DestinationWriterRoleArn: !GetAtt S3DestinationWriterRole.Arn
+        FFmpegContainerName: !Sub ${AWS::StackName}-ffmpeg-container
+        FFmpegEcsTaskDefinitionArn: !Ref FFmpegEcsTaskDefinition
+        FFmpegTaskOutputLambdaFunctionArn: !GetAtt FFmpegTaskOutputLambdaFunction.Arn
+        VpcPublicSubnet1: !Ref PublicSubnet1
+        VpcPublicSubnet2: !Ref PublicSubnet2
+      DefinitionUri: state-machine.asl.yml
+      Role: !GetAtt StateMachineIamRole.Arn
+      Tags:
+        prx:meta:tagging-version: "2021-04-07"
+        prx:cloudformation:stack-name: !Ref AWS::StackName
+        prx:cloudformation:stack-id: !Ref AWS::StackId
+        prx:ops:environment: !Ref EnvironmentType
+        prx:dev:application: Oxbow
+  StateMachineTimedOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub MAJOR [Oxbow] State machine <${EnvironmentTypeAbbreviation}> EXECUTION TIMED OUT (${AWS::StackName})
+      AlarmDescription: !Sub >-
+        ${EnvironmentType} Oxbow state machine has had an execution time out.
+        This could be for any reason, but the maximum execution time is 1 year.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: ExecutionsTimedOut
+      Namespace: AWS/States
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref StateMachine
+  StateMachineThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub MAJOR [Oxbow] State machine <${EnvironmentTypeAbbreviation}> STATE TRANSISITON THROTTLED (${AWS::StackName})
+      AlarmDescription: !Sub >-
+        ${EnvironmentType} Oxbow state machine has had state transitions
+        throttled. This is a limit imposed by AWS Step Functions itself within
+        the state machine, not related to throttling of services used as state
+        resources, such as AWS Lambda or Fargate.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: ExecutionThrottled
+      Namespace: AWS/States
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref StateMachine
+  StateMachineFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub MAJOR [Oxbow] State machine <${EnvironmentTypeAbbreviation}> EXECUTION FAILED (${AWS::StackName})
+      AlarmDescription: >-
+        A state machine execution failure indicates that an error occurred and
+        was unable to be caught and handled gracefully. This likely means the
+        job failed in some way and that some or all callbacks were unsuccessful.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: ExecutionsFailed
+      Namespace: AWS/States
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref StateMachine
+  # Job and Task Alarms
+  JobsFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateProductionResources
+    Properties:
+      AlarmName: !Sub MINOR [Oxbow] State machine <${EnvironmentTypeAbbreviation}> EXPERIENCED JOB FAILURE (${AWS::StackName})
+      AlarmDescription: >-
+        A Oxbow job failure indicates that one or more of the tasks that the
+        job included weren't able to complete successfully. This does not
+        indicate an issue with the state machine execution, and some tasks may
+        have been successful. Callbacks about the failed job were sent
+        successfully.
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref StateMachine
+      EvaluationPeriods: 1
+      MetricName: JobsFailed
+      Namespace: PRX/Oxbow
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+
+Outputs:
+  JobExecutionSnsTopicArn:
+    Value: !Ref JobExecutionSnsTopic
+  JobExecutionSqsQueueArn:
+    Value: !GetAtt JobExecutionSqsQueue.Arn
+  JobExecutionSqsQueueUrl:
+    Value: !Ref JobExecutionSqsQueue
+  S3DestinationWriterRoleArn:
+    Value: !GetAtt S3DestinationWriterRole.Arn
+  GCPStorageDestinationWriterRoleArn:
+    Value: !GetAtt GCPStorageDestinationWriterRole.Arn
+  CustomEventBusName:
+    Value: !Ref CustomEventBus
+  StateMachineArn:
+    Value: !Ref StateMachine
