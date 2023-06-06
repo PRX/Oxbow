@@ -98,7 +98,6 @@ States:
         Id.$: "$.Job.Id"
       Execution:
         Id.$: "$$.Execution.Id"
-      Artifact.$: "$.Artifact"
       TaskIndex.$: "$$.Map.Item.Index"
       Task.$: "$$.Map.Item.Value" # This value is a task defined in the job input, e.g., { "Type": "Copy" }
       Callbacks.$: "$.Job.Callbacks"
