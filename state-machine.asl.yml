@@ -78,7 +78,7 @@ States:
               MaxAttempts: 3
               BackoffRate: 2
 
-# Start of task execution
+  # Start of task execution
   Tasks Map:
     # The key output of this map state is the TaskResults array. There will
     # be one element for each task, whether it succeeded or failed. Successful

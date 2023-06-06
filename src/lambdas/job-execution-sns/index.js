@@ -2,16 +2,16 @@
 // machine. It passes the SNS message directly to the state machine as
 // the execution input.
 
-const AWS = require('aws-sdk');
+const AWS = require("aws-sdk");
 
-const stepfunctions = new AWS.StepFunctions({ apiVersion: '2016-11-23' });
+const stepfunctions = new AWS.StepFunctions({ apiVersion: "2016-11-23" });
 
 exports.handler = async (event) => {
   console.log(
     JSON.stringify({
-      msg: 'Starting execution',
+      msg: "Starting execution",
       job: event.Records[0].Sns.Message,
-    }),
+    })
   );
 
   await stepfunctions
