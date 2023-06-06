@@ -622,6 +622,31 @@ Resources:
       RuleAction: allow
       RuleNumber: 115
   ##
+  PublicSubnetIPv4AllowDnsOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 53
+        To: 53
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 134
+  PublicSubnetIPv6AllowDnsOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 53
+        To: 53
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 135
+  ##
   PublicSubnetIPv4AllowHttpOutboundTrafficNetworkAclEntry:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -629,8 +654,8 @@ Resources:
       Egress: true
       NetworkAclId: !Ref PublicSubnetNetworkAcl
       PortRange:
-        From: 80
-        To: 80
+        From: 53
+        To: 53
       Protocol: 6 # TCP
       RuleAction: allow
       RuleNumber: 124
@@ -646,7 +671,6 @@ Resources:
       Protocol: 6 # TCP
       RuleAction: allow
       RuleNumber: 125
-  ##
   ##
   PublicSubnetIPv4AllowHttpsOutboundTrafficNetworkAclEntry:
     Type: AWS::EC2::NetworkAclEntry
