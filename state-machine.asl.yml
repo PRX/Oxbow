@@ -163,6 +163,8 @@ States:
                       Value: "${S3DestinationWriterRoleArn}"
                     - Name: STATE_MACHINE_AWS_REGION
                       Value: "${AwsRegion}"
+                    - Name: STATE_MACHINE_ARTIFACT_BUCKET_NAME
+                      Value: "${ArtifactBucketName}"
                     - Name: STATE_MACHINE_FFMPEG_TASK_JSON
                       Value.$: States.JsonToString($.Task.FFmpeg)
                   Name: "${FFmpegContainerName}"

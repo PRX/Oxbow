@@ -1305,6 +1305,7 @@ Resources:
       DefinitionSubstitutions:
         AwsPartition: !Ref AWS::Partition
         AwsRegion: !Ref AWS::Region
+        ArtifactBucketName: !Ref ArtifactBucket
         CallbackLambdaFunctionArn: !GetAtt CallbackLambdaFunction.Arn
         EcsClusterArn: !GetAtt EcsCluster.Arn
         NormalizeInputLambdaFunctionArn: !GetAtt NormalizeInputLambdaFunction.Arn
