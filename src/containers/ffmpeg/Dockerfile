@@ -1,7 +1,7 @@
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023
 
 RUN dnf update -y \
-    && dnf install -y wget tar xz \
+    && dnf install -y wget tar xz nscd \
     && dnf install -y ruby3.2
 
 # See https://docs.aws.amazon.com/linux/al2023/release-notes/all-packages.html
