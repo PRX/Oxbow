@@ -12,7 +12,7 @@
 # STATE_MACHINE_ARTIFACT_BUCKET_NAME
 # STATE_MACHINE_FFMPEG_TASK_JSON
 
-require "Resolv"
+require "resolv"
 p Resolv.getaddress "www.prx.org"
 
 require "aws-sdk-cloudwatch"
