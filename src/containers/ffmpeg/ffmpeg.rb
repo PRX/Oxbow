@@ -73,7 +73,7 @@ raise StandardError, "FFmpeg failed" unless system ffmpeg_cmd
 end_time = Time.now.to_i
 duration = end_time - start_time
 
-outputs.each_with_index do |output, index|
+outputs.each_with_index do |output, idx|
   # Probe the outputs of the command
   ffprobe_cmd = [
     "./ffmpeg-bin/ffprobe",
