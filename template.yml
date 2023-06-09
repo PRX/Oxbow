@@ -654,8 +654,8 @@ Resources:
       Egress: true
       NetworkAclId: !Ref PublicSubnetNetworkAcl
       PortRange:
-        From: 53
-        To: 53
+        From: 80
+        To: 80
       Protocol: 6 # TCP
       RuleAction: allow
       RuleNumber: 124
