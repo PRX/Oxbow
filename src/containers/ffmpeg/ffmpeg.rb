@@ -60,7 +60,7 @@ cloudwatch.put_metric_data({
 
 # Execute the command
 ffmpeg_cmd = [
-  "./ffmpeg-bin/ffmpeg",
+  "ffmpeg",
   ffmpeg_global_opts,
   "#{ffmpeg_inputs}",
   "#{ffmpeg_outputs}"
@@ -77,7 +77,7 @@ duration = end_time - start_time
 outputs.each_with_index do |output, idx|
   # Probe the outputs of the command
   ffprobe_cmd = [
-    "./ffmpeg-bin/ffprobe",
+    "ffprobe",
     "-v error",
     "-show_streams",
     "-show_format",
