@@ -214,7 +214,7 @@ Resources:
               Resource: !Ref StateMachine
               Sid: AllowJobExecution
           Version: "2012-10-17"
-      Runtime: nodejs14.x
+      Runtime: nodejs16.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -327,7 +327,7 @@ Resources:
       Handler: index.handler
       MemorySize: 128
       Role: !GetAtt JobExecutionSqsQueueLambdaIamRole.Arn
-      Runtime: nodejs14.x
+      Runtime: nodejs16.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -1033,7 +1033,7 @@ Resources:
               Effect: Allow
               Resource: "*"
           Version: "2012-10-17"
-      Runtime: nodejs14.x
+      Runtime: nodejs16.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -1069,7 +1069,7 @@ Resources:
       MemorySize: 128
       Policies:
         - !Ref ArtifactBucketReadOnlyAccessPolicy
-      Runtime: nodejs14.x
+      Runtime: nodejs16.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -1166,7 +1166,7 @@ Resources:
       Handler: index.handler
       MemorySize: 128
       Role: !GetAtt CallbackLambdaIamRole.Arn
-      Runtime: nodejs14.x
+      Runtime: nodejs16.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -1203,7 +1203,7 @@ Resources:
               Effect: Allow
               Resource: "*"
           Version: "2012-10-17"
-      Runtime: nodejs14.x
+      Runtime: nodejs16.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
