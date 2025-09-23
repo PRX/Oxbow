@@ -1,29 +1,29 @@
 {
-  "Job": {
-    "Id": "oxbow-sample-ffmpeg-options",
-    "Tasks": [
-      {
-        "Type": "FFmpeg",
-        "FFmpeg": {
-          "Inputs": "-t 1:23 -i http://khpr-ice.streamguys1.com/kipo2",
-          "Outputs": [
-            {
-              "Format": "flac",
-              "Options": "-metadata title=some_title",
-              "Destination": {
-                "Mode": "AWS/S3",
-                "BucketName": "prx-porter-sandbox",
-                "ObjectKey": "dev/sample/ffmpeg-options/ffmpeg.flac",
-                "Parameters": {
-                  "CacheControl": "max-age=604800",
-                  "ContentDisposition": "attachment; filename=\"download.flac\"",
-                  "ContentType": "audio/flac"
-                }
-              }
-            }
-          ]
-        }
-      }
-    ]
-  }
+	"Job": {
+		"Id": "oxbow-sample-ffmpeg-options",
+		"Tasks": [
+			{
+				"Type": "FFmpeg",
+				"FFmpeg": {
+					"Inputs": "-t 1:23 -i http://khpr-ice.streamguys1.com/kipo2",
+					"Outputs": [
+						{
+							"Format": "flac",
+							"Options": "-metadata title=some_title",
+							"Destination": {
+								"Mode": "AWS/S3",
+								"BucketName": "prx-porter-sandbox",
+								"ObjectKey": "dev/sample/ffmpeg-options/ffmpeg.flac",
+								"Parameters": {
+									"CacheControl": "max-age=604800",
+									"ContentDisposition": "attachment; filename=\"download.flac\"",
+									"ContentType": "audio/flac"
+								}
+							}
+						}
+					]
+				}
+			}
+		]
+	}
 }

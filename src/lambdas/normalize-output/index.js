@@ -4,18 +4,18 @@
 import sendTelemetry from "./telemetry.js";
 
 export const handler = async (event) => {
-  console.log(JSON.stringify({ msg: "State input", event }));
+	console.log(JSON.stringify({ msg: "State input", event }));
 
-  const now = new Date();
-  const msg = { Time: now.toISOString(), Timestamp: +now / 1000 };
+	const now = new Date();
+	const msg = { Time: now.toISOString(), Timestamp: +now / 1000 };
 
-  if (event.Message) {
-    Object.assign(msg, event.Message);
-  }
+	if (event.Message) {
+		Object.assign(msg, event.Message);
+	}
 
-  console.log(JSON.stringify({ msg: "Normalized output", body: msg }));
+	console.log(JSON.stringify({ msg: "Normalized output", body: msg }));
 
-  await sendTelemetry(event);
+	await sendTelemetry(event);
 
-  return msg;
+	return msg;
 };
