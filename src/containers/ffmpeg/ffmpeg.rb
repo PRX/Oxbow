@@ -20,7 +20,7 @@ require "json"
 
 class String
   def underscore
-    gsub(/::/, "/")
+    gsub("::", "/")
       .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
       .gsub(/([a-z\d])([A-Z])/, '\1_\2')
       .tr("-", "_")
@@ -29,7 +29,6 @@ class String
 end
 
 cloudwatch = Aws::CloudWatch::Client.new
-s3 = Aws::S3::Client.new
 
 start_time = Time.now.to_i
 
@@ -38,7 +37,6 @@ ffmpeg_global_opts = task_details["GlobalOptions"]
 ffmpeg_inputs = task_details["Inputs"]
 
 outputs = task_details["Outputs"]
-ffmpeg_outputs = outputs.each_with_index.map {|o, idx| "#{o['Options']} -f #{o['Format']} output-#{idx}.file" }.join(" ")
 
 # Count the tasks in CloudWatch Metrics
 cloudwatch.put_metric_data({
@@ -59,11 +57,12 @@ cloudwatch.put_metric_data({
 })
 
 # Execute the command
+ffmpeg_outputs = outputs.each_with_index.map { |o, idx| "#{o["Options"]} -f #{o["Format"]} output-#{idx}.file" }.join(" ")
 ffmpeg_cmd = [
   "ffmpeg",
   ffmpeg_global_opts,
-  "#{ffmpeg_inputs}",
-  "#{ffmpeg_outputs}"
+  ffmpeg_inputs.to_s,
+  ffmpeg_outputs.to_s
 ].join(" ")
 
 puts "Calling FFmpeg"
@@ -73,6 +72,10 @@ raise StandardError, "FFmpeg failed" unless system ffmpeg_cmd
 
 end_time = Time.now.to_i
 duration = end_time - start_time
+
+# We can use a single S3 TransferManager to PUT all probes
+put_probe_s3_client = Aws::S3::Client.new(region: ENV["STATE_MACHINE_AWS_REGION"])
+put_probe_s3tm = Aws::S3::TransferManager.new(client: put_probe_s3_client)
 
 outputs.each_with_index do |output, idx|
   # Probe the outputs of the command
@@ -90,11 +93,8 @@ outputs.each_with_index do |output, idx|
 
   # Write the probe output to S3
   puts "Writing probe output to S3 artifact bucket"
-  s3 = Aws::S3::Resource.new(region: ENV["STATE_MACHINE_AWS_REGION"])
-  bucket_name = ENV["STATE_MACHINE_ARTIFACT_BUCKET_NAME"]
   object_key = "#{ENV["STATE_MACHINE_EXECUTION_ID"]}/ffmpeg/ffprobe-#{ENV["STATE_MACHINE_TASK_INDEX"]}-#{idx}.json"
-  obj = s3.bucket(bucket_name).object(object_key)
-  obj.upload_file("ffprobe-#{idx}.json")
+  put_probe_s3tm.upload_file("ffprobe-#{idx}.json", bucket: bucket_name, key: object_key)
 
   destination = output["Destination"]
 
@@ -110,9 +110,42 @@ outputs.each_with_index do |output, idx|
       role_session_name: "oxbow_ffmpeg_task"
     })
 
-    s3_writer = Aws::S3::Client.new(credentials: role)
+    credentials = Aws::Credentials.new(
+      role.credentials.access_key_id,
+      role.credentials.secret_access_key,
+      role.credentials.session_token
+    )
+
+    # The Ruby AWS SDK does not intelligently handle cases where the client isn't
+    # explicitly set for the region where the bucket exists. We have to detect
+    # the region using HeadBucket, and then create the client with the returned
+    # region.
+    # TODO This isn't necessary when the bucket and the client are in the same
+    # region. It would be possible to catch the error and do the lookup only when
+    # necessary.
+
+    # Create a client with permission to HeadBucket
+    begin
+      s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
+      bucket_head = s3_writer.head_bucket({bucket: ENV["STATE_MACHINE_DESTINATION_BUCKET_NAME"]})
+      bucket_region = bucket_head.context.http_response.headers["x-amz-bucket-region"]
+    rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
+      bucket_region = e.context.http_response.headers["x-amz-bucket-region"]
+    end
+
+    puts "Destination bucket in region: #{bucket_region}"
+
+    # Create a new client with the permissions and the correct region
+    s3_writer = Aws::S3::Client.new(credentials: credentials, region: bucket_region)
 
     put_object_params = {}
+
+    # When the optional `ContentType` property is set to `REPLACE`, if a MIME is
+    # included with the artifact, that should be used as the new file's
+    # content type
+    if destination["ContentType"] == "REPLACE" && artifact.dig("Descriptor", "MIME")
+      put_object_params[:content_type] = artifact["Descriptor"]["MIME"]
+    end
 
     # For historical reasons, the available parameters match ALLOWED_UPLOAD_ARGS
     # from Boto3's S3Transfer class.
@@ -125,15 +158,13 @@ outputs.each_with_index do |output, idx|
       end
     end
 
+    put_object_params[:bucket] = ENV["STATE_MACHINE_DESTINATION_BUCKET_NAME"]
+    put_object_params[:key] = ENV["STATE_MACHINE_DESTINATION_OBJECT_KEY"]
+
     # Upload the encoded file to the S3
     puts "Writing output to S3 destination"
-    File.open("output-#{idx}.file", "rb") do |file|
-      put_object_params[:bucket] = destination["BucketName"]
-      put_object_params[:key] = destination["ObjectKey"]
-      put_object_params[:body] = file
-
-      s3_writer.put_object(put_object_params)
-    end
+    put_ouput_s3tm = Aws::S3::TransferManager.new(client: s3_writer)
+    put_ouput_s3tm.upload_file("output-#{idx}.file", **put_object_params)
   end
 end
 

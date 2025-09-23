@@ -1,25 +1,27 @@
 {
-  "name": "oxbow",
-  "version": "1.0.0",
-  "license": "AGPL-3.0",
-  "repository": {
-    "type": "git",
-    "url": "git://github.com/PRX/Oxbow.git"
-  },
-  "dependencies": {
-    "aws-sdk": "^2.1354.0"
-  },
-  "devDependencies": {
-    "@types/node": "*",
-    "dotenv": "*",
-    "eslint": "*",
-    "eslint-config-airbnb-base": "*",
-    "eslint-config-prettier": "*",
-    "eslint-plugin-import": "*",
-    "eslint-plugin-prettier": "*",
-    "jsdoc": "*",
-    "prettier": "*",
-    "typescript": "*",
-    "yarn": "*"
-  }
+	"name": "oxbow",
+	"version": "1.0.0",
+	"license": "AGPL-3.0",
+	"repository": {
+		"type": "git",
+		"url": "git://github.com/PRX/Oxbow.git"
+	},
+	"dependencies": {
+		"@aws-sdk/client-cloudwatch": "*",
+		"@aws-sdk/client-sfn": "*",
+		"@aws-sdk/client-eventbridge": "*",
+		"@aws-sdk/client-s3": "*",
+		"@aws-sdk/client-sns": "*",
+		"@aws-sdk/client-sqs": "*",
+		"@aws-sdk/client-sts": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "*",
+		"@types/node": "*",
+		"dotenv": "*",
+		"jsdoc": "*",
+		"prettier": "*",
+		"typescript": "*",
+		"yarn": "*"
+	}
 }

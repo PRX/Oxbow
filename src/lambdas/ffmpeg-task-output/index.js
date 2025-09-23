@@ -1,47 +1,64 @@
 // Because the result of a Fargate task is not sufficient for sending a proper
 // callback, this function takes the entire task input and builds a better
 // result that gets passed to the callback task.
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { ConfiguredRetryStrategy } from "@smithy/util-retry";
 
-const AWS = require("aws-sdk");
+const retryStrategy = new ConfiguredRetryStrategy(
+	5, // Max attempts
+	(attempt) => 100 + attempt * 500,
+);
 
-const s3 = new AWS.S3({ apiVersion: "2006-03-01" });
+const requestHandler = new NodeHttpHandler({
+	connectionTimeout: 800,
+	requestTimeout: 2000,
+	socketTimeout: 500,
+});
 
-exports.handler = async (event) => {
-  console.log(JSON.stringify({ msg: "State input", input: event }));
+const s3 = new S3Client({
+	apiVersion: "2006-03-01",
+	followRegionRedirects: true,
+	retryStrategy,
+	requestHandler,
+});
 
-  const result = {
-    Task: event.Task.Type,
-    FFmpeg: {
-      Outputs: [],
-    },
-  };
+export const handler = async (event) => {
+	console.log(JSON.stringify({ msg: "State input", input: event }));
 
-  for (let idx = 0; idx < event.Task.FFmpeg.Outputs.length; idx += 1) {
-    // Get ffprobe results
-    // eslint-disable-next-line no-await-in-loop
-    const file = await s3
-      .getObject({
-        Bucket: process.env.ARTIFACT_BUCKET_NAME,
-        Key: `${event.Execution.Id}/ffmpeg/ffprobe-${event.TaskIteratorIndex}-${idx}.json`,
-      })
-      .promise();
-    const ffprobe = JSON.parse(file.Body.toString());
+	const result = {
+		Task: event.Task.Type,
+		FFmpeg: {
+			Outputs: [],
+		},
+	};
 
-    result.FFmpeg.Outputs.push({
-      Mode: event.Task.FFmpeg.Outputs[idx].Destination.Mode,
-      BucketName: event.Task.FFmpeg.Outputs[idx].Destination.BucketName,
-      ObjectKey: event.Task.FFmpeg.Outputs[idx].Destination.ObjectKey,
-      Duration: +ffprobe.format.duration * 1000,
-      Size: +ffprobe.format.size,
-    });
-  }
+	for (let idx = 0; idx < event.Task.FFmpeg.Outputs.length; idx += 1) {
+		// Get ffprobe results
+		const file = await s3.send(
+			new GetObjectCommand({
+				Bucket: process.env.ARTIFACT_BUCKET_NAME,
+				Key: `${event.Execution.Id}/ffmpeg/ffprobe-${event.TaskIteratorIndex}-${idx}.json`,
+			}),
+		);
+		const json = await file.Body.transformToString();
+		const ffprobe = JSON.parse(json);
 
-  const now = new Date();
+		result.FFmpeg.Outputs.push({
+			Mode: event.Task.FFmpeg.Outputs[idx].Destination.Mode,
+			BucketName: event.Task.FFmpeg.Outputs[idx].Destination.BucketName,
+			ObjectKey: event.Task.FFmpeg.Outputs[idx].Destination.ObjectKey,
+			Duration: +ffprobe.format.duration * 1000,
+			Size: +ffprobe.format.size,
+		});
+	}
 
-  result.Time = now.toISOString();
-  result.Timestamp = +now / 1000;
+	const now = new Date();
 
-  console.log(JSON.stringify({ msg: "Result", result }));
+	result.Time = now.toISOString();
+	result.Timestamp = +now / 1000;
 
-  return result;
+	console.log(JSON.stringify({ msg: "Result", result }));
+
+	return result;
 };

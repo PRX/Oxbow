@@ -206,6 +206,8 @@ Resources:
             Topic: !Ref JobExecutionSnsTopic
           Type: SNS
       Handler: index.handler
+      Layers:
+        - !Ref AwsSdkJsV3LambdaLayer
       MemorySize: 128
       Policies:
         - Statement:
@@ -214,7 +216,7 @@ Resources:
               Resource: !Ref StateMachine
               Sid: AllowJobExecution
           Version: "2012-10-17"
-      Runtime: nodejs16.x
+      Runtime: nodejs22.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -325,9 +327,11 @@ Resources:
             Enabled: !If [CreateSqsEventMapping, true, false]
             Queue: !GetAtt JobExecutionSqsQueue.Arn
       Handler: index.handler
+      Layers:
+        - !Ref AwsSdkJsV3LambdaLayer
       MemorySize: 128
       Role: !GetAtt JobExecutionSqsQueueLambdaIamRole.Arn
-      Runtime: nodejs16.x
+      Runtime: nodejs22.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName
@@ -1017,6 +1021,20 @@ Resources:
         - { Key: prx:cloudformation:stack-id, Value: !Ref AWS::StackId }
         - { Key: prx:ops:environment, Value: !Ref EnvironmentType }
         - { Key: prx:dev:application, Value: Oxbow }
+  # Lambda Layers
+  AwsSdkJsV3LambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CompatibleArchitectures:
+        - x86_64
+        - arm64
+      CompatibleRuntimes:
+        - nodejs22.x
+      ContentUri: lib/aws-sdk-js-v3
+      Description: aws-sdk v3 NPM module
+      RetentionPolicy: Delete
   # Normalize Input Lambda
   NormalizeInputLambdaFunction:
     Type: AWS::Serverless::Function
@@ -1196,6 +1214,8 @@ Resources:
       Description: >-
         Normalizes Oxbow job output
       Handler: index.handler
+      Layers:
+        - !Ref AwsSdkJsV3LambdaLayer
       MemorySize: 128
       Policies:
         - Statement:
@@ -1203,7 +1223,7 @@ Resources:
               Effect: Allow
               Resource: "*"
           Version: "2012-10-17"
-      Runtime: nodejs16.x
+      Runtime: nodejs22.x
       Tags:
         prx:meta:tagging-version: "2021-04-07"
         prx:cloudformation:stack-name: !Ref AWS::StackName

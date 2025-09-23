@@ -1,233 +1,292 @@
-const querystring = require("querystring");
+import http from "node:http";
+import https from "node:https";
+import querystring from "node:querystring";
+import {
+	CloudWatchClient,
+	PutMetricDataCommand,
+} from "@aws-sdk/client-cloudwatch";
+import {
+	EventBridgeClient,
+	PutEventsCommand,
+} from "@aws-sdk/client-eventbridge";
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { ConfiguredRetryStrategy } from "@smithy/util-retry";
 
-const AWS = require("aws-sdk");
-const http = require("http");
-const https = require("https");
+const retryStrategy = new ConfiguredRetryStrategy(
+	5, // Max attempts
+	(attempt) => 100 + attempt * 500,
+);
 
-const sns = new AWS.SNS({ apiVersion: "2010-03-31" });
-const sqs = new AWS.SQS({ apiVersion: "2012-11-05" });
-const sts = new AWS.STS({ apiVersion: "2011-06-15" });
-const cloudwatch = new AWS.CloudWatch({ apiVersion: "2010-08-01" });
-const eventbridge = new AWS.EventBridge({ apiVersion: "2015-10-07" });
+const requestHandler = new NodeHttpHandler({
+	connectionTimeout: 800,
+	requestTimeout: 1200,
+	socketTimeout: 500,
+});
+
+const sts = new STSClient({ apiVersion: "2011-06-15" });
+const cloudwatch = new CloudWatchClient({
+	apiVersion: "2010-08-01",
+	retryStrategy,
+	requestHandler,
+});
+const eventbridge = new EventBridgeClient({
+	apiVersion: "2015-10-07",
+	retryStrategy,
+	requestHandler,
+});
 
 function httpRequest(event, message, redirectCount, redirectUrl) {
-  return new Promise((resolve, reject) => {
-    const q = new URL(redirectUrl || event.Callback.URL);
+	return new Promise((resolve, reject) => {
+		const q = new URL(redirectUrl || event.Callback.URL);
 
-    const options = {
-      host: q.host,
-      port: q.port,
-      path: `${q.pathname || ""}${q.search || ""}`,
-      method: event.Callback.Method,
-      headers: {},
-    };
+		const options = {
+			host: q.host,
+			port: q.port,
+			path: `${q.pathname || ""}${q.search || ""}`,
+			method: event.Callback.Method,
+			headers: {},
+		};
 
-    let body;
-    if (event.Callback["Content-Type"] === "application/json") {
-      body = JSON.stringify(message);
-    } else if (
-      event.Callback["Content-Type"] === "application/x-www-form-urlencoded"
-    ) {
-      body = querystring.encode(message);
-    } else if (
-      event.Callback.Method === "GET" &&
-      event.Callback.QueryParameterName
-    ) {
-      q.searchParams.set(event.Callback.QueryParameterName, message);
-      options.path = `${q.pathname || ""}?${q.searchParams.toString()}`;
-    } else {
-      reject(new Error("Unknown HTTP Content-Type"));
-    }
+		let body;
+		if (event.Callback["Content-Type"] === "application/json") {
+			body = JSON.stringify(message);
+		} else if (
+			event.Callback["Content-Type"] === "application/x-www-form-urlencoded"
+		) {
+			body = querystring.encode(message);
+		} else if (
+			event.Callback.Method === "GET" &&
+			event.Callback.QueryParameterName
+		) {
+			q.searchParams.set(event.Callback.QueryParameterName, message);
+			options.path = `${q.pathname || ""}?${q.searchParams.toString()}`;
+		} else {
+			reject(new Error("Unknown HTTP Content-Type"));
+		}
 
-    options.headers["Content-Type"] = event.Callback["Content-Type"];
-    options.headers["Content-Length"] = Buffer.byteLength(body);
+		options.headers["Content-Type"] = event.Callback["Content-Type"];
+		options.headers["Content-Length"] = Buffer.byteLength(body);
 
-    const h = q.protocol === "https:" ? https : http;
-    const req = h.request(options, (res) => {
-      res.setEncoding("utf8");
+		const h = q.protocol === "https:" ? https : http;
+		const req = h.request(options, (res) => {
+			res.setEncoding("utf8");
 
-      let resData = "";
-      res.on("data", (chunk) => {
-        resData += chunk;
-        return resData;
-      });
+			let resData = "";
+			res.on("data", (chunk) => {
+				resData += chunk;
+				return resData;
+			});
 
-      res.on("end", async () => {
-        if (
-          (res.statusCode >= 200 && res.statusCode < 300) ||
-          res.statusCode === 404 ||
-          res.statusCode === 410
-        ) {
-          resolve();
-        } else if (res.statusCode === 301 || res.statusCode === 302) {
-          try {
-            if (redirectCount > +process.env.MAX_HTTP_REDIRECTS) {
-              reject(new Error("Too many redirects"));
-              return;
-            }
+			res.on("end", async () => {
+				if (
+					(res.statusCode >= 200 && res.statusCode < 300) ||
+					res.statusCode === 404 ||
+					res.statusCode === 410
+				) {
+					resolve();
+				} else if (res.statusCode === 301 || res.statusCode === 302) {
+					try {
+						if (redirectCount > +process.env.MAX_HTTP_REDIRECTS) {
+							reject(new Error("Too many redirects"));
+							return;
+						}
 
-            console.log(
-              JSON.stringify({
-                msg: `Following HTTP redirect`,
-                location: res.headers.location,
-                count: redirectCount,
-              })
-            );
+						console.log(
+							JSON.stringify({
+								msg: `Following HTTP redirect`,
+								location: res.headers.location,
+								count: redirectCount,
+							}),
+						);
 
-            const count = redirectCount ? redirectCount + 1 : 1;
-            await httpRequest(event, message, count, res.headers.location);
-            resolve();
-          } catch (error) {
-            reject(error);
-          }
-        } else {
-          const error = new Error(`Error ${res.statusCode}: ${resData}`);
-          reject(error);
-        }
-      });
-    });
+						const count = redirectCount ? redirectCount + 1 : 1;
+						await httpRequest(event, message, count, res.headers.location);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				} else {
+					const error = new Error(`Error ${res.statusCode}: ${resData}`);
+					reject(error);
+				}
+			});
+		});
 
-    req.on("error", (error) => reject(error));
+		req.on("error", (error) => reject(error));
 
-    req.write(body);
-    req.end();
-  });
+		req.write(body);
+		req.end();
+	});
 }
 
 async function s3Put(event, message) {
-  const id = event.Execution.Id.split(":").pop();
+	const id = event.Execution.Id.split(":").pop();
 
-  let key;
-  if (message.JobReceived) {
-    key = "/job_received.json";
-  } else if (message.TaskResult) {
-    key = `/task_result.${event.TaskIteratorIndex}.json`;
-  } else if (message.JobResult) {
-    key = "/job_result.json";
-  } else {
-    key = `/unknown_${+new Date()}.json`;
-  }
+	let key;
+	if (message.JobReceived) {
+		key = "/job_received.json";
+	} else if (message.TaskResult) {
+		key = `/task_result.${event.TaskIteratorIndex}.json`;
+	} else if (message.JobResult) {
+		key = "/job_result.json";
+	} else {
+		key = `/unknown_${Date.now()}.json`;
+	}
 
-  const role = await sts
-    .assumeRole({
-      RoleArn: process.env.S3_DESTINATION_WRITER_ROLE,
-      RoleSessionName: "oxbow_s3_callback",
-    })
-    .promise();
+	const role = await sts.send(
+		new AssumeRoleCommand({
+			RoleArn: process.env.S3_DESTINATION_WRITER_ROLE,
+			RoleSessionName: "oxbow_s3_callback",
+		}),
+	);
 
-  const s3 = new AWS.S3({
-    apiVersion: "2006-03-01",
-    accessKeyId: role.Credentials.AccessKeyId,
-    secretAccessKey: role.Credentials.SecretAccessKey,
-    sessionToken: role.Credentials.SessionToken,
-  });
+	const s3 = new S3Client({
+		apiVersion: "2006-03-01",
+		credentials: {
+			accessKeyId: role.Credentials.AccessKeyId,
+			secretAccessKey: role.Credentials.SecretAccessKey,
+			sessionToken: role.Credentials.SessionToken,
+		},
+		followRegionRedirects: true,
+	});
 
-  await s3
-    .putObject({
-      Bucket: event.Callback.BucketName,
-      Key: [event.Callback.ObjectPrefix, id, key].join(""),
-      Body: JSON.stringify(message),
-    })
-    .promise();
+	await s3.send(
+		new PutObjectCommand({
+			Bucket: event.Callback.BucketName,
+			Key: [event.Callback.ObjectPrefix, id, key].join(""),
+			Body: JSON.stringify(message),
+		}),
+	);
 }
 
 async function eventBridgePutEvent(event, message, now) {
-  // Assign values based on the type of callback message being sent, which is
-  // detected by the precense of certain keys
-  let DetailType;
-  if (message.JobReceived) {
-    DetailType = "Oxbow Job Received Callback";
-  } else if (message.TaskResult) {
-    DetailType = "Oxbow Task Result Callback";
-  } else if (message.JobResult) {
-    DetailType = "Oxbow Job Result Callback";
-  }
+	// Assign values based on the type of callback message being sent, which is
+	// detected by the precense of certain keys
+	let DetailType;
+	if (message.JobReceived) {
+		DetailType = "Oxbow Job Received Callback";
+	} else if (message.TaskResult) {
+		DetailType = "Oxbow Task Result Callback";
+	} else if (message.JobResult) {
+		DetailType = "Oxbow Job Result Callback";
+	}
 
-  await eventbridge
-    .putEvents({
-      Entries: [
-        {
-          Detail: JSON.stringify(message),
-          DetailType,
-          ...(event.Callback.EventBusName && {
-            EventBusName: event.Callback.EventBusName,
-          }),
-          Resources: [event.StateMachine.Id, event.Execution.Id],
-          Source: "org.prx.oxbow",
-          Time: now,
-        },
-      ],
-    })
-    .promise();
+	await eventbridge.send(
+		new PutEventsCommand({
+			Entries: [
+				{
+					Detail: JSON.stringify(message),
+					DetailType,
+					...(event.Callback.EventBusName && {
+						EventBusName: event.Callback.EventBusName,
+					}),
+					Resources: [event.StateMachine.Id, event.Execution.Id],
+					Source: "org.prx.oxbow",
+					Time: now,
+				},
+			],
+		}),
+	);
 }
 
 async function putErrorMetric() {
-  await cloudwatch
-    .putMetricData({
-      Namespace: "PRX/Oxbow",
-      MetricData: [
-        {
-          MetricName: "ErrorCallbackMessagesSent",
-          Dimensions: [
-            {
-              Name: "LambdaFunctionName",
-              Value: process.env.AWS_LAMBDA_FUNCTION_NAME,
-            },
-          ],
-          Value: 1,
-          Unit: "Count",
-        },
-      ],
-    })
-    .promise();
+	await cloudwatch.send(
+		new PutMetricDataCommand({
+			Namespace: "PRX/Oxbow",
+			MetricData: [
+				{
+					MetricName: "ErrorCallbackMessagesSent",
+					Dimensions: [
+						{
+							Name: "LambdaFunctionName",
+							Value: process.env.AWS_LAMBDA_FUNCTION_NAME,
+						},
+					],
+					Value: 1,
+					Unit: "Count",
+				},
+			],
+		}),
+	);
 }
 
 /**
  * @param {object} event
  */
-exports.handler = async (event) => {
-  console.log(JSON.stringify({ msg: "State input", input: event }));
+export const handler = async (event) => {
+	console.log(JSON.stringify({ msg: "State input", input: event }));
 
-  const now = new Date();
-  const msg = { Time: now.toISOString(), Timestamp: +now / 1000 };
+	const now = new Date();
+	const msg = { Time: now.toISOString(), Timestamp: +now / 1000 };
 
-  if (event.Message) {
-    Object.assign(msg, event.Message);
-  }
+	if (event.Message) {
+		Object.assign(msg, event.Message);
+	}
 
-  console.log(JSON.stringify({ msg: "Callback message body", body: msg }));
+	console.log(JSON.stringify({ msg: "Callback message body", body: msg }));
 
-  // Keep track of how many JobResult callbacks indicated any sort of job
-  // execution problem in a custom CloudWatch Metric
-  // TODO Maybe move this to its own Lambda; this is kind of a weird spot for it
-  if (Object.prototype.hasOwnProperty.call(msg, "JobResult")) {
-    const hasFailedTask =
-      Object.prototype.hasOwnProperty.call(msg.JobResult, "FailedTasks") &&
-      msg.JobResult.FailedTasks.length;
-    const hasJobProblem =
-      Object.prototype.hasOwnProperty.call(msg.JobResult, "State") &&
-      msg.JobResult.State !== "DONE";
+	// Keep track of how many JobResult callbacks indicated any sort of job
+	// execution problem in a custom CloudWatch Metric
+	// TODO Maybe move this to its own Lambda; this is kind of a weird spot for it
+	if (Object.hasOwn(msg, "JobResult")) {
+		const hasFailedTask =
+			Object.hasOwn(msg.JobResult, "FailedTasks") &&
+			msg.JobResult.FailedTasks.length;
+		const hasJobProblem =
+			Object.hasOwn(msg.JobResult, "State") && msg.JobResult.State !== "DONE";
 
-    if (hasFailedTask || hasJobProblem) {
-      await putErrorMetric();
-    }
-  }
+		if (hasFailedTask || hasJobProblem) {
+			await putErrorMetric();
+			console.log("Metrics sent");
+		}
+	}
 
-  if (event.Callback.Type === "AWS/SNS") {
-    const TopicArn = event.Callback.Topic;
-    const Message = JSON.stringify(msg);
+	console.log("Send callback");
+	if (event.Callback.Type === "AWS/SNS") {
+		const TopicArn = event.Callback.Topic;
+		const Message = JSON.stringify(msg);
 
-    await sns.publish({ Message, TopicArn }).promise();
-  } else if (event.Callback.Type === "AWS/SQS") {
-    const QueueUrl = event.Callback.Queue;
-    const MessageBody = JSON.stringify(msg);
+		const region = TopicArn.split(":")[3];
+		const sns = new SNSClient({
+			apiVersion: "2010-03-31",
+			region,
+			retryStrategy,
+			requestHandler,
+		});
 
-    await sqs.sendMessage({ QueueUrl, MessageBody }).promise();
-  } else if (event.Callback.Type === "AWS/S3") {
-    await s3Put(event, msg);
-  } else if (event.Callback.Type === "AWS/EventBridge") {
-    await eventBridgePutEvent(event, msg, now);
-  } else if (event.Callback.Type === "HTTP") {
-    await httpRequest(event, msg);
-  }
+		console.log("Send SNS");
+		await sns.send(new PublishCommand({ Message, TopicArn }));
+		console.log("SNS sent");
+	} else if (event.Callback.Type === "AWS/SQS") {
+		const QueueUrl = event.Callback.Queue;
+		const MessageBody = JSON.stringify(msg);
+
+		const region = QueueUrl.match(/[a-z]{2}-[a-z]+-[0-9]+/)[0];
+		const sqs = new SQSClient({
+			apiVersion: "2012-11-05",
+			region,
+			retryStrategy,
+			requestHandler,
+		});
+
+		console.log("Send SQS");
+		await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody }));
+		console.log("SQS sent");
+	} else if (event.Callback.Type === "AWS/S3") {
+		console.log("Send S3");
+		await s3Put(event, msg);
+		console.log("S3 sent");
+	} else if (event.Callback.Type === "AWS/EventBridge") {
+		console.log("Send bridge");
+		await eventBridgePutEvent(event, msg, now);
+		console.log("Bridge sent");
+	} else if (event.Callback.Type === "HTTP") {
+		console.log("Send http");
+		await httpRequest(event, msg);
+		console.log("HTTP sent");
+	}
 };
