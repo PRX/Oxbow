@@ -128,7 +128,7 @@ outputs.each_with_index do |output, idx|
     # Create a client with permission to HeadBucket
     begin
       s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
-      bucket_head = s3_writer.head_bucket({bucket: ENV["STATE_MACHINE_DESTINATION_BUCKET_NAME"]})
+      bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
       bucket_region = bucket_head.context.http_response.headers["x-amz-bucket-region"]
     rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
       bucket_region = e.context.http_response.headers["x-amz-bucket-region"]
@@ -159,8 +159,8 @@ outputs.each_with_index do |output, idx|
       end
     end
 
-    put_object_params[:bucket] = ENV["STATE_MACHINE_DESTINATION_BUCKET_NAME"]
-    put_object_params[:key] = ENV["STATE_MACHINE_DESTINATION_OBJECT_KEY"]
+    put_object_params[:bucket] = destination["BucketName"]
+    put_object_params[:key] = destination["ObjectKey"]
 
     # Upload the encoded file to the S3
     puts "Writing output to S3 destination"
