@@ -13,7 +13,7 @@
 //
 // The result path and output path MUST both be "$".
 
-import sendTelemetry from "./telemetry.js";
+import sendTelemetry from "./telemetry.mjs";
 
 class MissingTaskTypeError extends Error {
 	constructor(...params) {
