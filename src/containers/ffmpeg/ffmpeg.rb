@@ -93,6 +93,7 @@ outputs.each_with_index do |output, idx|
 
   # Write the probe output to S3
   puts "Writing probe output to S3 artifact bucket"
+  bucket_name = ENV["STATE_MACHINE_ARTIFACT_BUCKET_NAME"]
   object_key = "#{ENV["STATE_MACHINE_EXECUTION_ID"]}/ffmpeg/ffprobe-#{ENV["STATE_MACHINE_TASK_INDEX"]}-#{idx}.json"
   put_probe_s3tm.upload_file("ffprobe-#{idx}.json", bucket: bucket_name, key: object_key)
 
