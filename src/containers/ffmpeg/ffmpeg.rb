@@ -116,6 +116,7 @@ rescue => e
   sf.send_task_failure({
     task_token: ENV["TASK_TOKEN"],
     error: e.class,
+    error: e.class.name,
     cause: e.message
   })
 end
