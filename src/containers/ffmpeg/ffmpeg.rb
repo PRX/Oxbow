@@ -21,6 +21,7 @@ require "aws-sdk-sts"
 
 require "json"
 require "time"
+require "open3"
 
 class String
   def underscore
