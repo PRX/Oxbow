@@ -17,6 +17,7 @@ RUN gem install bundler
 RUN bundle install
 
 ADD ffmpeg.rb .
+ADD telemetry.rb .
 RUN chmod +x ./ffmpeg.rb
 
 ENTRYPOINT ["./ffmpeg.rb"]

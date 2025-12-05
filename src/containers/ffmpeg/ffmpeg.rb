@@ -1,4 +1,4 @@
-#!/bin/ruby
+#!/usr/bin/env ruby
 
 # The following environment variables are passed in as ContainerOverrides when
 # the state machine runs the ECS task
@@ -14,14 +14,14 @@
 # STATE_MACHINE_TASK_TOKEN
 # STATE_MACHINE_TASK_TYPE
 
-require "aws-sdk-cloudwatch"
-require "aws-sdk-s3"
-require "aws-sdk-states"
-require "aws-sdk-sts"
-
 require "json"
 require "time"
 require "open3"
+
+require "aws-sdk-s3"
+require "aws-sdk-states"
+require "aws-sdk-sts"
+load "./telemetry.rb"
 
 class String
   def underscore
@@ -33,10 +33,11 @@ class String
   end
 end
 
-cloudwatch = Aws::CloudWatch::Client.new
 sf = Aws::States::Client.new
 
 begin
+  send_start_metric
+
   task_result = {
     Task: ENV["STATE_MACHINE_TASK_TYPE"],
     FFmpeg: {
@@ -58,24 +59,6 @@ begin
   #   { "Format": "mp3", "Options": "-sample_fmt s16 -ar 44100", "Destination": {…} }
   # ]
   outputs = task_details["Outputs"]
-
-  # Count the tasks in CloudWatch Metrics
-  cloudwatch.put_metric_data({
-    namespace: "PRX/Oxbow",
-    metric_data: [
-      {
-        metric_name: "FFmpegExecutions",
-        dimensions: [
-          {
-            name: "StateMachineName",
-            value: ENV["STATE_MACHINE_NAME"]
-          }
-        ],
-        value: 1,
-        unit: "Count"
-      }
-    ]
-  })
 
   # Execute the command
   ffmpeg_outputs = outputs.each_with_index.map { |o, idx| "#{o["Options"]} -f #{o["Format"]} output-#{idx}.file" }.join(" ")
@@ -102,8 +85,7 @@ begin
       "-show_streams",
       "-show_format",
       "-i output-#{idx}.file",
-      "-print_format json",
-      "> ffprobe-#{idx}.json"
+      "-print_format json"
     ].join(" ")
 
     stdout, _stderr, status = Open3.capture3(ffprobe_cmd)
@@ -205,23 +187,7 @@ begin
     output: task_result.to_json
   })
 
-  # Record FFmpeg duration in CloudWatch Metrics
-  cloudwatch.put_metric_data({
-    namespace: "PRX/Oxbow",
-    metric_data: [
-      {
-        metric_name: "FFmpegDuration",
-        dimensions: [
-          {
-            name: "StateMachineName",
-            value: ENV["STATE_MACHINE_NAME"]
-          }
-        ],
-        value: duration,
-        unit: "Seconds"
-      }
-    ]
-  })
+  send_end_metric(duration)
 rescue => e
   sf.send_task_failure({
     task_token: ENV["TASK_TOKEN"],
