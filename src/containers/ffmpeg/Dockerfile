@@ -18,6 +18,7 @@ RUN bundle install
 
 ADD ffmpeg.rb .
 ADD telemetry.rb .
+ADD destinations.rb .
 RUN chmod +x ./ffmpeg.rb
 
 ENTRYPOINT ["./ffmpeg.rb"]
