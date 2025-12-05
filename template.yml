@@ -962,6 +962,14 @@ Resources:
                 Effect: Allow
                 Resource: "*"
             Version: "2012-10-17"
+        # Allow it to send task results
+        - PolicyName: SendTaskStatus
+          PolicyDocument:
+            Statement:
+              - Action: states:SendTask*
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
       ManagedPolicyArns:
         # FFmpeg operations are always pulling FROM the artifact bucket
         - !Ref ArtifactBucketReadOnlyAccessPolicy
