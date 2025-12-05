@@ -107,15 +107,14 @@ begin
 
   # TODO log this result
   sf.send_task_success({
-    task_token: ENV["TASK_TOKEN"],
+    task_token: ENV["STATE_MACHINE_TASK_TOKEN"],
     output: task_result.to_json
   })
 
   send_end_metric(duration)
 rescue => e
   sf.send_task_failure({
-    task_token: ENV["TASK_TOKEN"],
-    error: e.class,
+    task_token: ENV["STATE_MACHINE_TASK_TOKEN"],
     error: e.class.name,
     cause: e.message
   })
