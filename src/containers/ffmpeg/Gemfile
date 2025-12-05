@@ -6,5 +6,6 @@ ruby "3.2.3"
 
 gem "aws-sdk-cloudwatch", "~> 1"
 gem "aws-sdk-s3", "~> 1"
+gem "aws-sdk-states", "~> 1"
 gem "aws-sdk-sts", "~> 1"
 gem "nokogiri"

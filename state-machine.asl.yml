@@ -141,7 +141,7 @@ States:
         FFmpeg Task Fargate Execution:
           Type: Task
           Comment: Runs FFmpeg
-          Resource: arn:aws:states:::ecs:runTask.sync
+          Resource: arn:aws:states:::ecs:runTask.waitForTaskToken
           InputPath: "$"
           Parameters:
             Cluster: "${EcsClusterArn}"
@@ -167,6 +167,10 @@ States:
                       Value: "${ArtifactBucketName}"
                     - Name: STATE_MACHINE_FFMPEG_TASK_JSON
                       Value.$: States.JsonToString($.Task.FFmpeg)
+                    - Name: STATE_MACHINE_TASK_TYPE
+                      Value.$: "$.Task.Type"
+                    - Name: STATE_MACHINE_TASK_TOKEN
+                      Value.$: "$$.Task.Token"
                   Name: "${FFmpegContainerName}"
             NetworkConfiguration:
               AwsvpcConfiguration:
@@ -176,40 +180,14 @@ States:
                   - "${VpcPublicSubnet2}"
             PropagateTags: TASK_DEFINITION
             TaskDefinition: "${FFmpegEcsTaskDefinitionArn}"
-          ResultPath: "$.Void"
-          OutputPath: "$"
-          Next: FFmpeg Task Results Formatter
-          Retry:
-            - ErrorEquals:
-                - States.ALL
-              IntervalSeconds: 15
-              MaxAttempts: 5
-              BackoffRate: 2
-          Catch:
-            - ErrorEquals:
-                - States.ALL
-              ResultPath: "$.Error"
-              Next: TaskResult Error Callback Map
-        FFmpeg Task Results Formatter:
-          Type: Task
-          Comment: Formats the output of a FFmpeg task
-          Resource: "${FFmpegTaskOutputLambdaFunctionArn}"
-          InputPath: "$"
-          Parameters:
-            Job:
-              Id.$: "$.Job.Id"
-            Execution:
-              Id.$: "$$.Execution.Id"
-            Task.$: "$.Task"
-            TaskIteratorIndex.$: "$.TaskIndex"
           ResultPath: "$.TaskResult"
           OutputPath: "$"
           Next: TaskResult Callbacks Map
           Retry:
             - ErrorEquals:
                 - States.ALL
-              IntervalSeconds: 5
-              MaxAttempts: 3
+              IntervalSeconds: 15
+              MaxAttempts: 5
               BackoffRate: 2
           Catch:
             - ErrorEquals:
