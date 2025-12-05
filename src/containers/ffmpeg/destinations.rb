@@ -11,7 +11,7 @@ class String
   end
 end
 
-def send_to_s3(destination, local_file_name)
+def send_to_s3(output, destination, local_file_name)
   region = ENV["STATE_MACHINE_AWS_REGION"]
 
   sts = Aws::STS::Client.new(endpoint: "https://sts.#{region}.amazonaws.com")
@@ -46,8 +46,6 @@ def send_to_s3(destination, local_file_name)
     bucket_region = e.context.http_response.headers["x-amz-bucket-region"]
   end
 
-  puts "Destination bucket in region: #{bucket_region}"
-
   # Create a new client with the permissions and the correct region
   s3_writer = Aws::S3::Client.new(credentials: credentials, region: bucket_region)
 
@@ -68,7 +66,14 @@ def send_to_s3(destination, local_file_name)
   put_object_params[:key] = destination["ObjectKey"]
 
   # Upload the encoded file to the S3
-  puts "Writing output to S3 destination"
+  puts JSON.dump({
+    msg: "Sending output file to S3",
+    format: output["Format"],
+    opts: output["Options"],
+    region: bucket_region,
+    bucket: destination["BucketName"],
+    object: destination["ObjectKey"]
+  })
   put_ouput_s3tm = Aws::S3::TransferManager.new(client: s3_writer)
-  put_ouput_s3tm.upload_file("output-#{idx}.file", **put_object_params)
+  put_ouput_s3tm.upload_file(local_file_name, **put_object_params)
 end

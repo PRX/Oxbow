@@ -24,6 +24,7 @@ load "./destinations.rb"
 sf = Aws::States::Client.new
 
 begin
+  puts JSON.dump({msg: "Starting task…"})
   send_start_metric
 
   task_result = {
@@ -58,15 +59,24 @@ begin
     ffmpeg_outputs.to_s
   ].join(" ")
 
-  puts "Calling FFmpeg"
-  puts ffmpeg_cmd
+  puts JSON.dump({
+    msg: "Running FFmpeg",
+    global_opts: ffmpeg_global_opts,
+    input_opts: ffmpeg_inputs.to_s,
+    outputs_opts: ffmpeg_outputs.to_s,
+    full_command: ffmpeg_cmd
+  })
 
   raise StandardError, "FFmpeg failed" unless system ffmpeg_cmd
 
   end_time = Time.now.to_i
   duration = end_time - start_time
 
+  puts JSON.dump({msg: "FFmpeg exited successfully in #{duration} seconds"})
+
   outputs.each_with_index do |output, idx|
+    puts JSON.dump({msg: "Running FFprobe for output file", format: output["Format"], opts: output["Options"]})
+
     # Probe the outputs of the command
     ffprobe_cmd = [
       "ffprobe",
@@ -97,7 +107,7 @@ begin
     destination = output["Destination"]
 
     if destination["Mode"] == "AWS/S3"
-      send_to_s3(destination, "output-#{idx}.file")
+      send_to_s3(output, destination, "output-#{idx}.file")
     end
   end
 
@@ -105,14 +115,16 @@ begin
   task_result["Time"] = now.getutc.iso8601
   task_result["Timestamp"] = now.to_i
 
-  # TODO log this result
+  puts JSON.dump({msg: "Task output", output: task_result})
   sf.send_task_success({
     task_token: ENV["STATE_MACHINE_TASK_TOKEN"],
     output: task_result.to_json
   })
 
   send_end_metric(duration)
+  puts JSON.dump({msg: "Task complete; success has been reported to state machine"})
 rescue => e
+  puts JSON.dump({msg: "Task failed!", error: e.class.name, cause: e.message})
   sf.send_task_failure({
     task_token: ENV["STATE_MACHINE_TASK_TOKEN"],
     error: e.class.name,

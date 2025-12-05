@@ -4,6 +4,7 @@ CLOUDWATCH = Aws::CloudWatch::Client.new
 
 def send_start_metric
   # Count the tasks in CloudWatch Metrics
+  puts JSON.dump({msg: "Sending telemetry, execution counter"})
   CLOUDWATCH.put_metric_data({
     namespace: "PRX/Oxbow",
     metric_data: [
@@ -24,6 +25,7 @@ end
 
 def send_end_metric(duration)
   # Record FFmpeg duration in CloudWatch Metrics
+  puts JSON.dump({msg: "Sending telemetry, FFmpeg duration", duration: "#{duration} seconds"})
   CLOUDWATCH.put_metric_data({
     namespace: "PRX/Oxbow",
     metric_data: [
