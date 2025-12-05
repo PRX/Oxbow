@@ -10,11 +10,11 @@ See the Porter [README](https://github.com/PRX/Porter/blob/main/README.md) for d
 
 Each `FFmpeg` task runs an arbitrary FFmpeg command.
 
-`FFmpeg.Inputs` is expected to exist, and contain all input parameters for the command as a single string.
+`FFmpeg.Inputs` is expected to exist, and contain all input parameters for the command as a single string. The input is generally expected to be a source that is accessible over the public internet.
 
 `FFmpeg.GlobalOptions` is optional, and can contain all global parameters as a single string.
 
-`FFmpeg.Outputs` is expected to exist and is an array. Each element in the array represents an output of the FFmpeg command, and details on where that output should be stored. Within each element: `Format` is required and indicates how the output should be encoded. `Options` is required and is a string that contains a single set of output parameters **without the file name**. For example, if you normally would have included `-b:a 128k output.mp3` in the command, `Options` should include `-b:a 128k`. `Destination` is expected to exist and currently supports the `AWS/S3` mode.
+`FFmpeg.Outputs` is expected to exist and is an array. Each element in the array represents an output of the FFmpeg command, and details on where that output should be stored. Within each element: `Format` is required and indicates how the output should be encoded. `Options` is required and is a string that contains a single set of output parameters **without the file name**. For example, if you normally would have included `-b:a 128k output.mp3` in the command, `Options` should include `-b:a 128k`. `Destination` is expected to exist and currently supports the `AWS/S3` mode. You should ensure that the file extensions, content-types, etc that you define match the results of the output options; Oxbow will not make any inferences about file types.
 
 Input:
 
@@ -38,7 +38,8 @@ Input:
                         "ContentType": "audio/flac"
                     }
                 }
-            },{
+            },
+            {
                 "Format": "mp3",
                 "Options": "-b:a 128k",
                 "Destination": {
@@ -54,5 +55,46 @@ Input:
             }
         ]
     }
-  }
+}
+```
+You could also generate files with no external input:
+
+```json
+{
+    "Type": "FFmpeg",
+    "FFmpeg": {
+        "Inputs": "-f lavfi -i sine=frequency=440:beep_factor=4:sample_rate=48000:duration=10",
+        "GlobalOptions": "-loglevel warning",
+        "Outputs": [
+            {
+                "Format": "wav",
+                "Options": "-ac 2 -codec:a pcm_s16le",
+                "Destination": {
+                    "Mode": "AWS/S3",
+                    "BucketName": "myBucket",
+                    "ObjectKey": "myObject.wav",
+                    "Parameters": {
+                        "CacheControl": "max-age=604800",
+                        "ContentDisposition": "attachment; filename=\"download.wav\"",
+                        "ContentType": "audio/wav"
+                    }
+                }
+            },
+            {
+                "Format": "mp3",
+                "Options": "-ac 2 -codec:a libmp3lame",
+                "Destination": {
+                    "Mode": "AWS/S3",
+                    "BucketName": "myBucket",
+                    "ObjectKey": "myObject.wav",
+                    "Parameters": {
+                        "CacheControl": "max-age=604800",
+                        "ContentDisposition": "attachment; filename=\"download.mp3\"",
+                        "ContentType": "audio/mpeg"
+                    }
+                }
+            }
+        ]
+    }
+}
 ```
