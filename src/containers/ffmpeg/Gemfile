@@ -2,6 +2,8 @@
 
 source "https://rubygems.org"
 
+# This should roughly match the version that will be installed by
+# `apt-get install ruby-full` when the image provided by linuxserver is built
 ruby "3.2.3"
 
 gem "aws-sdk-cloudwatch", "~> 1"
