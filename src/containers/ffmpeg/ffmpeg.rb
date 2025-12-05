@@ -29,7 +29,7 @@ begin
   task_result = {
     Task: ENV["STATE_MACHINE_TASK_TYPE"],
     FFmpeg: {
-      Ouputs: []
+      Outputs: []
     }
   }
 
