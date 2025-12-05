@@ -1222,7 +1222,6 @@ Resources:
                 Resource:
                   - !GetAtt NormalizeInputLambdaFunction.Arn
                   - !GetAtt CallbackLambdaFunction.Arn
-                  - !GetAtt FFmpegTaskOutputLambdaFunction.Arn
                   - !GetAtt NormalizeOutputLambdaFunction.Arn
             Version: "2012-10-17"
         - PolicyName: PassRoleToEcsPolicy
@@ -1291,7 +1290,6 @@ Resources:
         S3DestinationWriterRoleArn: !GetAtt S3DestinationWriterRole.Arn
         FFmpegContainerName: !Sub ${AWS::StackName}-ffmpeg-container
         FFmpegEcsTaskDefinitionArn: !Ref FFmpegEcsTaskDefinition
-        FFmpegTaskOutputLambdaFunctionArn: !GetAtt FFmpegTaskOutputLambdaFunction.Arn
         VpcPublicSubnet1: !Ref PublicSubnet1
         VpcPublicSubnet2: !Ref PublicSubnet2
       DefinitionUri: state-machine.asl.yml
