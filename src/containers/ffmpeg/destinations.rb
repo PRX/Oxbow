@@ -20,15 +20,14 @@ end
 # necessary.
 def bucket_region(credentials, destination)
   @bucket_regions ||= {}
+
+  # Create a client with permission to HeadBucket
   @bucket_regions[destination["BucketName"]] ||= begin
-    # Create a client with permission to HeadBucket
-    begin
-      s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
-      bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
-      bucket_head.context.http_response.headers["x-amz-bucket-region"]
-    rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
-      e.context.http_response.headers["x-amz-bucket-region"]
-    end
+    s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
+    bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
+    bucket_head.context.http_response.headers["x-amz-bucket-region"]
+  rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
+    e.context.http_response.headers["x-amz-bucket-region"]
   end
 end
 
