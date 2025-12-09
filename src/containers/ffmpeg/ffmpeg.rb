@@ -50,6 +50,14 @@ begin
   # ]
   outputs = task_details["Outputs"]
 
+  # write heartbeats to S3 destinations
+  heartbeat = Thread.new do
+    outputs.each do |output|
+      wip_to_s3(output, JSON.generate(elapsed_seconds: Time.now.to_i - start_time))
+    end
+    sleep 5
+  end
+
   # Execute the command
   ffmpeg_outputs = outputs.each_with_index.map { |o, idx| "#{o["Options"]} -f #{o["Format"]} output-#{idx}.file" }.join(" ")
   ffmpeg_cmd = [
@@ -104,11 +112,7 @@ begin
       Size: probe_results["format"]["size"].to_f
     })
 
-    destination = output["Destination"]
-
-    if destination["Mode"] == "AWS/S3"
-      send_to_s3(output, destination, "output-#{idx}.file")
-    end
+    send_to_s3(output, destination, "output-#{idx}.file")
   end
 
   now = Time.now
@@ -122,6 +126,7 @@ begin
   })
 
   send_end_metric(duration)
+  heartbeat.exit
   puts JSON.dump({msg: "Task complete; success has been reported to state machine"})
 rescue => e
   puts JSON.dump({msg: "Task failed!", error: e.class.name, cause: e.message})
