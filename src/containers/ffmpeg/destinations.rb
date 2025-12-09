@@ -11,7 +11,7 @@ class String
   end
 end
 
-def send_to_s3(output, destination, local_file_name)
+def s3_client(destination)
   region = ENV["STATE_MACHINE_AWS_REGION"]
 
   sts = Aws::STS::Client.new(endpoint: "https://sts.#{region}.amazonaws.com")
@@ -47,8 +47,14 @@ def send_to_s3(output, destination, local_file_name)
   end
 
   # Create a new client with the permissions and the correct region
-  s3_writer = Aws::S3::Client.new(credentials: credentials, region: bucket_region)
+  Aws::S3::Client.new(credentials: credentials, region: bucket_region)
+end
 
+def send_to_s3(output, local_file_name)
+  destination = output["Destination"]
+  return unless destination["Mode"] == "AWS/S3"
+
+  s3_writer = s3_client(destination)
   put_object_params = {}
 
   # For historical reasons, the available parameters match ALLOWED_UPLOAD_ARGS
@@ -76,4 +82,14 @@ def send_to_s3(output, destination, local_file_name)
   })
   put_ouput_s3tm = Aws::S3::TransferManager.new(client: s3_writer)
   put_ouput_s3tm.upload_file(local_file_name, **put_object_params)
+end
+
+def wip_to_s3(output, str)
+  destination = output["Destination"]
+  return unless destination["Mode"] == "AWS/S3"
+
+  client = s3_client(destination)
+  bucket = destination["BucketName"]
+  key = destination["ObjectKey"] + ".wip"
+  client.put_object(body: str, bucket: bucket, key: key)
 end
