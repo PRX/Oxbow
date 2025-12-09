@@ -52,7 +52,7 @@ begin
 
   # write heartbeats to S3 destinations
   heartbeat = Thread.new do
-    while true
+    loop do
       outputs.each do |output|
         now = Time.now.to_i
         wip_to_s3(output, JSON.generate(now: now, elapsed_seconds: now - start_time))
@@ -129,7 +129,6 @@ begin
   })
 
   send_end_metric(duration)
-  heartbeat.exit
   puts JSON.dump({msg: "Task complete; success has been reported to state machine"})
 rescue => e
   puts JSON.dump({msg: "Task failed!", error: e.class.name, cause: e.message})
@@ -138,4 +137,6 @@ rescue => e
     error: e.class.name,
     cause: e.message
   })
+ensure
+  heartbeat.exit
 end
