@@ -11,6 +11,27 @@ class String
   end
 end
 
+# The Ruby AWS SDK does not intelligently handle cases where the client isn't
+# explicitly set for the region where the bucket exists. We have to detect
+# the region using HeadBucket, and then create the client with the returned
+# region.
+# TODO This isn't necessary when the bucket and the client are in the same
+# region. It would be possible to catch the error and do the lookup only when
+# necessary.
+def bucket_region(credentials, destination)
+  @bucket_regions ||= {}
+  @bucket_regions[destination["BucketName"]] ||= begin
+    # Create a client with permission to HeadBucket
+    begin
+      s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
+      bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
+      bucket_head.context.http_response.headers["x-amz-bucket-region"]
+    rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
+      e.context.http_response.headers["x-amz-bucket-region"]
+    end
+  end
+end
+
 def s3_client(destination)
   region = ENV["STATE_MACHINE_AWS_REGION"]
 
@@ -29,25 +50,10 @@ def s3_client(destination)
     role.credentials.session_token
   )
 
-  # The Ruby AWS SDK does not intelligently handle cases where the client isn't
-  # explicitly set for the region where the bucket exists. We have to detect
-  # the region using HeadBucket, and then create the client with the returned
-  # region.
-  # TODO This isn't necessary when the bucket and the client are in the same
-  # region. It would be possible to catch the error and do the lookup only when
-  # necessary.
-
-  # Create a client with permission to HeadBucket
-  begin
-    s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
-    bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
-    bucket_region = bucket_head.context.http_response.headers["x-amz-bucket-region"]
-  rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
-    bucket_region = e.context.http_response.headers["x-amz-bucket-region"]
-  end
+  region = bucket_region(credentials, destination)
 
   # Create a new client with the permissions and the correct region
-  Aws::S3::Client.new(credentials: credentials, region: bucket_region)
+  Aws::S3::Client.new(credentials: credentials, region: region)
 end
 
 def send_to_s3(output, local_file_name)
