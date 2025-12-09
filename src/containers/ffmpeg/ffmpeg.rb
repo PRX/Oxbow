@@ -52,10 +52,13 @@ begin
 
   # write heartbeats to S3 destinations
   heartbeat = Thread.new do
-    outputs.each do |output|
-      wip_to_s3(output, JSON.generate(elapsed_seconds: Time.now.to_i - start_time))
+    while true
+      outputs.each do |output|
+        now = Time.now.to_i
+        wip_to_s3(output, JSON.generate(now: now, elapsed_seconds: now - start_time))
+      end
+      sleep 5
     end
-    sleep 5
   end
 
   # Execute the command
