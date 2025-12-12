@@ -115,7 +115,7 @@ begin
       Size: probe_results["format"]["size"].to_f
     })
 
-    send_to_s3(output, destination, "output-#{idx}.file")
+    send_to_s3(output, "output-#{idx}.file")
   end
 
   now = Time.now
@@ -138,5 +138,5 @@ rescue => e
     cause: e.message
   })
 ensure
-  heartbeat.exit
+  heartbeat&.exit
 end

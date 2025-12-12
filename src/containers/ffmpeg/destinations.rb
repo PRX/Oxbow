@@ -81,7 +81,6 @@ def send_to_s3(output, local_file_name)
     msg: "Sending output file to S3",
     format: output["Format"],
     opts: output["Options"],
-    region: bucket_region,
     bucket: destination["BucketName"],
     object: destination["ObjectKey"]
   })
