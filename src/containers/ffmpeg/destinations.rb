@@ -11,7 +11,27 @@ class String
   end
 end
 
-def send_to_s3(output, destination, local_file_name)
+# The Ruby AWS SDK does not intelligently handle cases where the client isn't
+# explicitly set for the region where the bucket exists. We have to detect
+# the region using HeadBucket, and then create the client with the returned
+# region.
+# TODO This isn't necessary when the bucket and the client are in the same
+# region. It would be possible to catch the error and do the lookup only when
+# necessary.
+def bucket_region(credentials, destination)
+  @bucket_regions ||= {}
+
+  # Create a client with permission to HeadBucket
+  @bucket_regions[destination["BucketName"]] ||= begin
+    s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
+    bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
+    bucket_head.context.http_response.headers["x-amz-bucket-region"]
+  rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
+    e.context.http_response.headers["x-amz-bucket-region"]
+  end
+end
+
+def s3_client(destination)
   region = ENV["STATE_MACHINE_AWS_REGION"]
 
   sts = Aws::STS::Client.new(endpoint: "https://sts.#{region}.amazonaws.com")
@@ -29,26 +49,17 @@ def send_to_s3(output, destination, local_file_name)
     role.credentials.session_token
   )
 
-  # The Ruby AWS SDK does not intelligently handle cases where the client isn't
-  # explicitly set for the region where the bucket exists. We have to detect
-  # the region using HeadBucket, and then create the client with the returned
-  # region.
-  # TODO This isn't necessary when the bucket and the client are in the same
-  # region. It would be possible to catch the error and do the lookup only when
-  # necessary.
-
-  # Create a client with permission to HeadBucket
-  begin
-    s3_writer = Aws::S3::Client.new(credentials: credentials, endpoint: "https://s3.amazonaws.com")
-    bucket_head = s3_writer.head_bucket({bucket: destination["BucketName"]})
-    bucket_region = bucket_head.context.http_response.headers["x-amz-bucket-region"]
-  rescue Aws::S3::Errors::Http301Error, Aws::S3::Errors::PermanentRedirect => e
-    bucket_region = e.context.http_response.headers["x-amz-bucket-region"]
-  end
+  region = bucket_region(credentials, destination)
 
   # Create a new client with the permissions and the correct region
-  s3_writer = Aws::S3::Client.new(credentials: credentials, region: bucket_region)
+  Aws::S3::Client.new(credentials: credentials, region: region)
+end
 
+def send_to_s3(output, local_file_name)
+  destination = output["Destination"]
+  return unless destination["Mode"] == "AWS/S3"
+
+  s3_writer = s3_client(destination)
   put_object_params = {}
 
   # For historical reasons, the available parameters match ALLOWED_UPLOAD_ARGS
@@ -70,10 +81,19 @@ def send_to_s3(output, destination, local_file_name)
     msg: "Sending output file to S3",
     format: output["Format"],
     opts: output["Options"],
-    region: bucket_region,
     bucket: destination["BucketName"],
     object: destination["ObjectKey"]
   })
   put_ouput_s3tm = Aws::S3::TransferManager.new(client: s3_writer)
   put_ouput_s3tm.upload_file(local_file_name, **put_object_params)
+end
+
+def wip_to_s3(output, str)
+  destination = output["Destination"]
+  return unless destination["Mode"] == "AWS/S3"
+
+  client = s3_client(destination)
+  bucket = destination["BucketName"]
+  key = destination["ObjectKey"] + ".wip"
+  client.put_object(body: str, bucket: bucket, key: key)
 end

@@ -50,6 +50,17 @@ begin
   # ]
   outputs = task_details["Outputs"]
 
+  # write heartbeats to S3 destinations
+  heartbeat = Thread.new do
+    loop do
+      outputs.each do |output|
+        now = Time.now.to_i
+        wip_to_s3(output, JSON.generate(now: now, elapsed_seconds: now - start_time))
+      end
+      sleep 5
+    end
+  end
+
   # Execute the command
   ffmpeg_outputs = outputs.each_with_index.map { |o, idx| "#{o["Options"]} -f #{o["Format"]} output-#{idx}.file" }.join(" ")
   ffmpeg_cmd = [
@@ -104,11 +115,7 @@ begin
       Size: probe_results["format"]["size"].to_f
     })
 
-    destination = output["Destination"]
-
-    if destination["Mode"] == "AWS/S3"
-      send_to_s3(output, destination, "output-#{idx}.file")
-    end
+    send_to_s3(output, "output-#{idx}.file")
   end
 
   now = Time.now
@@ -130,4 +137,6 @@ rescue => e
     error: e.class.name,
     cause: e.message
   })
+ensure
+  heartbeat&.exit
 end
