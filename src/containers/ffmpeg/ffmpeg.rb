@@ -54,8 +54,7 @@ begin
   heartbeat = Thread.new do
     loop do
       outputs.each do |output|
-        now = Time.now.to_i
-        wip_to_s3(output, JSON.generate(now: now, elapsed_seconds: now - start_time))
+        wip_to_s3(output, JSON.generate(start: start_time, now: Time.now.to_i))
       end
       sleep 5
     end
@@ -112,7 +111,8 @@ begin
       BucketName: output["Destination"]["BucketName"],
       ObjectKey: output["Destination"]["ObjectKey"],
       Duration: probe_results["format"]["duration"].to_f * 1000,
-      Size: probe_results["format"]["size"].to_f
+      Size: probe_results["format"]["size"].to_f,
+      StartEpoch: start_time
     })
 
     send_to_s3(output, "output-#{idx}.file")
