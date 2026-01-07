@@ -2,10 +2,7 @@
 
 source "https://rubygems.org"
 
-# This should match the version that will exist in the CodeBuild environment
-# defined in `oxbow-cd-pipeline.yml`, which is usually a new-ish patch of the
-# selected minor version
-ruby "3.2.9"
+ruby file: ".tool-versions"
 
 gem "aws-sdk-states", "~> 1"
 gem "minitest"

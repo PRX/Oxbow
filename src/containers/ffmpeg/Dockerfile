@@ -13,6 +13,7 @@ WORKDIR $APP_HOME
 
 ADD Gemfile .
 ADD Gemfile.lock .
+ADD .tool-versions .
 RUN gem install bundler
 RUN bundle install
 

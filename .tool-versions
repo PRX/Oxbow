@@ -1,2 +1,5 @@
-ruby 3.2.9
+# This should match the version that will exist in the CodeBuild environment
+# defined in `oxbow-cd-pipeline.yml` for SamCodeBuildProject, which is usually
+# a new-ish patch of the selected minor version
+ruby 3.4.7
 nodejs 22.11.0
