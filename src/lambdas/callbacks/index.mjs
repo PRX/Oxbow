@@ -87,7 +87,7 @@ function httpRequest(event, message, redirectCount, redirectUrl) {
 					res.statusCode === 404 ||
 					res.statusCode === 410
 				) {
-					resolve();
+					resolve(true);
 				} else if (res.statusCode === 301 || res.statusCode === 302) {
 					try {
 						if (redirectCount > +process.env.MAX_HTTP_REDIRECTS) {
@@ -105,7 +105,7 @@ function httpRequest(event, message, redirectCount, redirectUrl) {
 
 						const count = redirectCount ? redirectCount + 1 : 1;
 						await httpRequest(event, message, count, res.headers.location);
-						resolve();
+						resolve(true);
 					} catch (error) {
 						reject(error);
 					}
@@ -215,7 +215,13 @@ async function putErrorMetric() {
 }
 
 /**
- * @param {object} event
+ * @typedef {object} CallbackEventInput
+ * @property {any} Message
+ * @property {any} Callback
+ */
+
+/**
+ * @param {CallbackEventInput} event
  */
 export const handler = async (event) => {
 	console.log(JSON.stringify({ msg: "State input", input: event }));
