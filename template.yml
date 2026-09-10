@@ -971,6 +971,19 @@ Resources:
                 Effect: Allow
                 Resource: "*"
             Version: "2012-10-17"
+        # Allow ECS Exec
+        - PolicyName: EcsExec
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Effect: Allow
+                Resource: "*"
+                Sid: AllowSsmChannels
+            Version: "2012-10-17"
       ManagedPolicyArns:
         # FFmpeg operations are always pulling FROM the artifact bucket
         - !Ref ArtifactBucketReadOnlyAccessPolicy
