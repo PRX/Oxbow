@@ -22,5 +22,4 @@ ADD telemetry.rb .
 ADD destinations.rb .
 RUN chmod +x ./ffmpeg.rb
 
-# ENTRYPOINT ["./ffmpeg.rb"]
-ENTRYPOINT ["/bin/bash"]
+ENTRYPOINT ["./ffmpeg.rb"]
