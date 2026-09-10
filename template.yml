@@ -702,6 +702,31 @@ Resources:
       RuleAction: allow
       RuleNumber: 105
   ##
+  PublicSubnetIPv4Allow8001HttpsOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 8001
+        To: 8001
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 140
+  PublicSubnetIPv6Allow8001HttpsOutboundTrafficNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      Egress: true
+      Ipv6CidrBlock: ::/0
+      NetworkAclId: !Ref PublicSubnetNetworkAcl
+      PortRange:
+        From: 8001
+        To: 8001
+      Protocol: 6 # TCP
+      RuleAction: allow
+      RuleNumber: 141
+  ##
   PublicSubnetIPv4AllowEphemeralInboundTrafficNetworkAclEntry:
     Type: AWS::EC2::NetworkAclEntry
     Properties:
