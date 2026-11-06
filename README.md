@@ -20,81 +20,82 @@ Input:
 
 ```json
 {
-    "Type": "FFmpeg",
-    "FFmpeg": {
-        "Inputs": "-t 60 -i \"http://example.com/stream.m3u8\"",
-        "GlobalOptions": "-loglevel debug",
-        "Outputs": [
-            {
-                "Format": "flac",
-                "Options": "-sample_fmt s16 -ar 48000",
-                "Destination": {
-                    "Mode": "AWS/S3",
-                    "BucketName": "myBucket",
-                    "ObjectKey": "myObject.flac",
-                    "Parameters": {
-                        "CacheControl": "max-age=604800",
-                        "ContentDisposition": "attachment; filename=\"download.flac\"",
-                        "ContentType": "audio/flac"
-                    }
-                }
-            },
-            {
-                "Format": "mp3",
-                "Options": "-b:a 128k",
-                "Destination": {
-                    "Mode": "AWS/S3",
-                    "BucketName": "myBucket",
-                    "ObjectKey": "myObject.mp3",
-                    "Parameters": {
-                        "CacheControl": "max-age=604800",
-                        "ContentDisposition": "attachment; filename=\"download.mp3\"",
-                        "ContentType": "audio/flac"
-                    }
-                }
-            }
-        ]
-    }
+        "Type": "FFmpeg",
+        "FFmpeg": {
+                "Inputs": "-t 60 -i \"http://example.com/stream.m3u8\"",
+                "GlobalOptions": "-loglevel debug",
+                "Outputs": [
+                        {
+                                "Format": "flac",
+                                "Options": "-sample_fmt s16 -ar 48000",
+                                "Destination": {
+                                        "Mode": "AWS/S3",
+                                        "BucketName": "myBucket",
+                                        "ObjectKey": "myObject.flac",
+                                        "Parameters": {
+                                                "CacheControl": "max-age=604800",
+                                                "ContentDisposition": "attachment; filename=\"download.flac\"",
+                                                "ContentType": "audio/flac"
+                                        }
+                                }
+                        },
+                        {
+                                "Format": "mp3",
+                                "Options": "-b:a 128k",
+                                "Destination": {
+                                        "Mode": "AWS/S3",
+                                        "BucketName": "myBucket",
+                                        "ObjectKey": "myObject.mp3",
+                                        "Parameters": {
+                                                "CacheControl": "max-age=604800",
+                                                "ContentDisposition": "attachment; filename=\"download.mp3\"",
+                                                "ContentType": "audio/flac"
+                                        }
+                                }
+                        }
+                ]
+        }
 }
 ```
+
 You could also generate files with no external input:
 
 ```json
 {
-    "Type": "FFmpeg",
-    "FFmpeg": {
-        "Inputs": "-f lavfi -i sine=frequency=440:beep_factor=4:sample_rate=48000:duration=10",
-        "GlobalOptions": "-loglevel warning",
-        "Outputs": [
-            {
-                "Format": "wav",
-                "Options": "-ac 2 -codec:a pcm_s16le",
-                "Destination": {
-                    "Mode": "AWS/S3",
-                    "BucketName": "myBucket",
-                    "ObjectKey": "myObject.wav",
-                    "Parameters": {
-                        "CacheControl": "max-age=604800",
-                        "ContentDisposition": "attachment; filename=\"download.wav\"",
-                        "ContentType": "audio/wav"
-                    }
-                }
-            },
-            {
-                "Format": "mp3",
-                "Options": "-ac 2 -codec:a libmp3lame",
-                "Destination": {
-                    "Mode": "AWS/S3",
-                    "BucketName": "myBucket",
-                    "ObjectKey": "myObject.wav",
-                    "Parameters": {
-                        "CacheControl": "max-age=604800",
-                        "ContentDisposition": "attachment; filename=\"download.mp3\"",
-                        "ContentType": "audio/mpeg"
-                    }
-                }
-            }
-        ]
-    }
+        "Type": "FFmpeg",
+        "FFmpeg": {
+                "Inputs": "-f lavfi -i sine=frequency=440:beep_factor=4:sample_rate=48000:duration=10",
+                "GlobalOptions": "-loglevel warning",
+                "Outputs": [
+                        {
+                                "Format": "wav",
+                                "Options": "-ac 2 -codec:a pcm_s16le",
+                                "Destination": {
+                                        "Mode": "AWS/S3",
+                                        "BucketName": "myBucket",
+                                        "ObjectKey": "myObject.wav",
+                                        "Parameters": {
+                                                "CacheControl": "max-age=604800",
+                                                "ContentDisposition": "attachment; filename=\"download.wav\"",
+                                                "ContentType": "audio/wav"
+                                        }
+                                }
+                        },
+                        {
+                                "Format": "mp3",
+                                "Options": "-ac 2 -codec:a libmp3lame",
+                                "Destination": {
+                                        "Mode": "AWS/S3",
+                                        "BucketName": "myBucket",
+                                        "ObjectKey": "myObject.wav",
+                                        "Parameters": {
+                                                "CacheControl": "max-age=604800",
+                                                "ContentDisposition": "attachment; filename=\"download.mp3\"",
+                                                "ContentType": "audio/mpeg"
+                                        }
+                                }
+                        }
+                ]
+        }
 }
 ```

@@ -1,15 +1,15 @@
 {
-	"compilerOptions": {
-		"module": "nodenext",
-		"target": "es2022",
-		"jsx": "preserve",
-		"checkJs": true,
-		"noEmit": true,
-		"allowJs": true,
-		"types": ["node"],
-		"strictNullChecks": false,
-		"noImplicitAny": false
-	},
-	"exclude": ["node_modules", "**/node_modules/*"],
-	"include": ["src/lambdas"]
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "es2022",
+    "jsx": "preserve",
+    "checkJs": true,
+    "noEmit": true,
+    "allowJs": true,
+    "types": ["node"],
+    "strictNullChecks": false,
+    "noImplicitAny": false
+  },
+  "exclude": ["node_modules", "**/node_modules/*"],
+  "include": ["src/lambdas"]
 }
